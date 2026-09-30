@@ -1,20 +1,83 @@
 {
+  "$schema": "./schema/book-platform.contract.v1.schema.json",
   "schema_version": "book-platform.contract.v1",
   "platform_id": "communication",
   "repository": "book-communication-platform",
   "status": "scaffolded",
   "api_version": "v1",
   "data_owner": "book-communication-platform",
-  "capabilities": ["platform-api", "health", "contract"],
-  "depends_on": [],
+  "capabilities": [
+    "email",
+    "sms",
+    "push",
+    "templates",
+    "delivery-status"
+  ],
+  "depends_on": [
+    "identity",
+    "workflow",
+    "observability"
+  ],
   "current_implementation": {
     "repository": "solo-empire",
-    "source_path": "infra/services/notifier"
+    "source_path": "infra/services/notifier",
+    "source_paths": [
+      "infra/services/notifier"
+    ],
+    "source_status": "current-implementation-in-solo-empire"
   },
   "migration": {
     "compatibility_adapter": "required",
     "shadow_parity": "pending",
     "cutover": "pending",
     "rollback": "required"
-  }
+  },
+  "migration_gates": [
+    "provider adapter mock",
+    "retry idempotency",
+    "opt-out enforcement"
+  ],
+  "surface_doc": "docs/CONTRACT-SURFACE.md",
+  "interfaces": [
+    {
+      "id": "communication.workflow.notifier-cycle",
+      "kind": "workflow",
+      "direction": "provides",
+      "name": "notifier check cycle (check_interval seconds; --once, --dry-run, --config)",
+      "status": "current-in-solo-empire",
+      "source": "infra/services/notifier/cmd/main.go"
+    },
+    {
+      "id": "communication.table.notification-log",
+      "kind": "table",
+      "direction": "provides",
+      "name": "notification_log delivery state (delivered_at, delivery_channel, delivery_attempts)",
+      "status": "current-in-solo-empire",
+      "source": "infra/services/notifier/internal/db/db.go"
+    },
+    {
+      "id": "communication.table.notifications",
+      "kind": "table",
+      "direction": "provides",
+      "name": "notifications inbox rows (task_id, channel, message, sent_at, is_read)",
+      "status": "current-in-solo-empire",
+      "source": "infra/services/notifier/internal/db/db.go"
+    },
+    {
+      "id": "communication.config.channels",
+      "kind": "config",
+      "direction": "provides",
+      "name": "channel switches: line, slack (webhook), email (SMTP), console",
+      "status": "current-in-solo-empire",
+      "source": "infra/services/notifier/configs/config.yaml"
+    },
+    {
+      "id": "communication.consumes.tasks",
+      "kind": "table",
+      "direction": "consumes",
+      "name": "tasks (overdue, due-soon, high-priority) read by the notifier",
+      "status": "current-in-solo-empire",
+      "source": "infra/services/notifier/internal/db/db.go"
+    }
+  ]
 }
