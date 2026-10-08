@@ -1,0 +1,8 @@
+system_id: bookchaowalit-backend/book-backend/book-communication-platform
+prefix: CARD
+brand: "BOOK COMMUNICATION PLATFORM"
+subtitle: "ขอบเขต contract ของ platform `communication` ยังไม่มี runtime"
+footer: "Book Communication Platform — Product Card"
+color: "#2f4b6e"
+audience: internal
+tier: L0
