@@ -19,12 +19,12 @@
     "observability"
   ],
   "current_implementation": {
-    "repository": "solo-empire",
-    "source_path": "infra/services/notifier",
+    "repository": "solo-notifications",
+    "source_path": "bookchaowalit/solo-notifications",
     "source_paths": [
-      "infra/services/notifier"
+      "bookchaowalit/solo-notifications"
     ],
-    "source_status": "current-implementation-in-solo-empire"
+    "source_status": "adjacent-domain-repository"
   },
   "migration": {
     "compatibility_adapter": "required",
