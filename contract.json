@@ -19,10 +19,10 @@
     "observability"
   ],
   "current_implementation": {
-    "repository": "solo-notifications",
-    "source_path": "bookchaowalit/solo-notifications",
+    "repository": "notifications",
+    "source_path": "bookchaowalit/notifications",
     "source_paths": [
-      "bookchaowalit/solo-notifications"
+      "bookchaowalit/notifications"
     ],
     "source_status": "adjacent-domain-repository"
   },
