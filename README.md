@@ -42,7 +42,7 @@ runs the same command on every push and pull request
 matches the sha256 pinned in `schema/book-platform.contract.v1.schema.json.sha256`
 (the canonical copy lives in `bookchaowalit-backend-core/contracts/`; change it
 there first, then copy the schema and its pin here). Pass
-`--canonical ../bookchaowalit-backend-core` to also compare with a local
+`--canonical ../platform-backend-core` to also compare with a local
 checkout. `python3 scripts/check_registry_alignment.py --solo-empire ../solo-empire`
 compares this contract with the parent platform registry (local only; read-only).
 
