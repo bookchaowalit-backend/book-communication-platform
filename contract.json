@@ -20,9 +20,9 @@
   ],
   "current_implementation": {
     "repository": "notifications",
-    "source_path": "bookchaowalit/notifications",
+    "source_path": "bookchaowalit/platform-notifications-api",
     "source_paths": [
-      "bookchaowalit/notifications"
+      "bookchaowalit/platform-notifications-api"
     ],
     "source_status": "adjacent-domain-repository"
   },
