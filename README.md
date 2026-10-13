@@ -1,4 +1,4 @@
-# book-communication-platform
+# platform-communication
 
 `Communication` platform boundary for the Book Platform portfolio.
 
@@ -12,8 +12,8 @@ provider integration, database writer, credential, or customer payload.
 ## Boundary
 
 - Owner: `bookchaowalit-backend`
-- Repository: `book-communication-platform`
-- Target remote: `https://github.com/bookchaowalit-backend/book-communication-platform.git` (published; runtime not activated)
+- Repository: `platform-communication`
+- Target remote: `https://github.com/bookchaowalit-backend/platform-communication.git` (published; runtime not activated)
 - Contract: `book-platform.contract.v1`
 - Status: `scaffolded`
 - Data owner: the platform boundary identified in `contract.json`
