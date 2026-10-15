@@ -620,11 +620,11 @@
       },
       {
         "id": "batch-per-event",
-        "rule": "Every unfollow in a LINE webhook batch yields its own opt-out, with the recipient resolved per event from source.userId (unknown users get a stable opaque ref, never dropped)."
+        "rule": "Every unfollow in a LINE webhook batch yields its own opt-out, with the recipient resolved per event from source.userId. Every LINE opt-out is also keyed by the hashed userId (address_ref) and enforcement checks that key, so an unfollow from a not-yet-mapped user still blocks later sends to that userId after it is mapped."
       },
       {
         "id": "reject-missing-event-id",
-        "rule": "An unfollow without webhookEventId or source.userId is rejected (400), never collapsed into a shared key."
+        "rule": "An unfollow without webhookEventId or source.userId is reported as a per-event 400 error, never collapsed into a shared key; the valid opt-outs of the same batch are still recorded."
       }
     ],
     "inbound_signals": [
@@ -728,7 +728,7 @@
         },
         "expect": [
           {
-            "recipient_ref": "line-user-5056ed2871b0e5c86516b34a",
+            "recipient_ref": "line-addr-2a0a53b71a33d19222e3c07f",
             "channel": "line",
             "source": "line.unfollow",
             "event_id": "line:01SYNTHETICEVENT0000000013"
@@ -774,6 +774,49 @@
           }
         },
         "expect_error": "missing_source_user"
+      },
+      {
+        "case": "line_batch_one_malformed",
+        "event": {
+          "provider": "line",
+          "body": {
+            "destination": "Uxxxxxxxx",
+            "events": [
+              {
+                "type": "unfollow",
+                "mode": "active",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000002"
+                }
+              },
+              {
+                "webhookEventId": "01SYNTHETICEVENT0000000020",
+                "type": "unfollow",
+                "mode": "active",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000005"
+                }
+              }
+            ]
+          }
+        },
+        "expect_error": "missing_webhook_event_id",
+        "expect_errors": [
+          {
+            "index": 0,
+            "reason": "missing_webhook_event_id"
+          }
+        ],
+        "expect_partial": [
+          {
+            "recipient_ref": "rcpt-0005",
+            "channel": "line",
+            "source": "line.unfollow",
+            "event_id": "line:01SYNTHETICEVENT0000000020"
+          }
+        ]
       },
       {
         "case": "line_follow_is_not_opt_out",
@@ -883,6 +926,15 @@
         "recipient_ref": "rcpt-0001",
         "expect": "console",
         "provider_calls": 1
+      },
+      {
+        "case": "unknown_user_unfollow_then_mapped_send",
+        "inbound": "line_unknown_user_kept",
+        "provider": "line",
+        "recipient_ref": "rcpt-0009",
+        "address": "U00000000000000000000000000000009",
+        "expect": "suppressed",
+        "provider_calls": 0
       }
     ],
     "recipient_map": {

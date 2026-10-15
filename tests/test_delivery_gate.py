@@ -4,7 +4,7 @@ The fixture is checked against the reference policy code (``reference/communicat
 ``contract.json`` and the consumer contract, so a provider, rule or field that drifts in one place
 fails here. ``SourceDriftTests`` also compares with a local checkout of the current server
 (``platform-notifications-api``) at ``PLATFORM_NOTIFICATIONS_API``; CI checks out the pinned
-public repository and sets it, and the tests fail (not skip) when ``CI`` is set without it.
+public repository, sets it and ``REQUIRE_SERVER_PARITY=1``; with that flag and no checkout the tests fail.
 """
 
 from __future__ import annotations
@@ -247,6 +247,11 @@ class OptOutTests(unittest.TestCase):
                     with self.assertRaises(policy.PolicyError) as error:
                         policy.opt_out_from_inbound(case["event"], recipients)
                     self.assertEqual((error.exception.status, error.exception.reason), (400, case["expect_error"]))
+                    if "expect_errors" in case:
+                        self.assertEqual(error.exception.errors, case["expect_errors"])
+                    partial = [{"recipient_ref": r.recipient_ref, "channel": r.channel, "source": r.source,
+                                "event_id": r.event_id} for r in error.exception.opt_outs]
+                    self.assertEqual(partial, case.get("expect_partial", []))
                     continue
                 result = policy.opt_out_from_inbound(case["event"], recipients)
                 sources.update(r.source for r in result)
@@ -261,7 +266,7 @@ class OptOutTests(unittest.TestCase):
         self.assertEqual(registry.record(first), "created")
         [again] = policy.opt_out_from_inbound(event, self.rules["recipient_map"])
         self.assertEqual(registry.record(again), "existing")
-        self.assertEqual(len(registry.entries), 1)
+        self.assertEqual(set(registry.entries.values()), {first})  # one opt-out (stored by ref and by address)
 
     def test_batch_unfollows_all_block(self) -> None:
         registry = policy.OptOutRegistry()
@@ -270,6 +275,34 @@ class OptOutTests(unittest.TestCase):
             self.assertEqual(registry.record(opt_out), "created")
         self.assertTrue(registry.blocks("rcpt-0002", "line"))
         self.assertTrue(registry.blocks("rcpt-0005", "line"))
+
+    def test_reviewer_repro_unknown_user_opt_out_survives_mapping(self) -> None:
+        # Round-2 repro: an unfollow from U9 before U9 is in the recipient model, then U9 is mapped to
+        # rcpt-0009 and a LINE message is queued for it. It used to be delivered (1 provider call).
+        box = policy.Outbox()
+        unfollow = {"provider": "line", "body": {"events": [{"type": "unfollow", "webhookEventId": "E9",
+                                                              "source": {"type": "user", "userId": "U9"}}]}}
+        for opt_out in policy.opt_out_from_inbound(unfollow, recipients={}):
+            self.assertEqual(box.opt_outs.record(opt_out), "created")
+        _, row = box.queue({"title": "t", "message": "m", "notification_type": "x", "recipient_ref": "rcpt-0009",
+                            "address": "U9"})
+        self.assertEqual(box.attempt(row["id"], "line", {"status": 200, "body": {}}), "suppressed")
+        self.assertEqual(box.sends, [])
+        # Another LINE user and the same user on another channel are not affected.
+        _, other = box.queue({"title": "t", "message": "m", "notification_type": "x", "recipient_ref": "rcpt-8",
+                              "address": "U8"})
+        self.assertEqual(box.attempt(other["id"], "line", {"status": 200, "body": {}}), "delivered")
+        self.assertFalse(box.opt_outs.blocks("rcpt-0009", "telegram", "U9"))
+        # The registry never stores the raw userId.
+        self.assertNotIn("U9", {ref for ref, _ in box.opt_outs.entries})
+
+    def test_valid_opt_outs_in_a_malformed_batch_are_kept(self) -> None:
+        body = {"provider": "line", "body": {"events": [
+            {"type": "unfollow", "source": {"type": "user", "userId": "U1"}},
+            {"type": "unfollow", "webhookEventId": "E2", "source": {"type": "user", "userId": "U2"}}]}}
+        parsed = policy.parse_inbound(body, {"U1": "r1", "U2": "r2"})
+        self.assertEqual(parsed["errors"], [{"index": 0, "reason": "missing_webhook_event_id"}])
+        self.assertEqual([o.recipient_ref for o in parsed["opt_outs"]], ["r2"])
 
     def test_reviewer_repro_missing_event_ids_are_not_collapsed(self) -> None:
         # Two id-less unfollows from different users used to share the key "line:None": the
@@ -296,10 +329,15 @@ class OptOutTests(unittest.TestCase):
         for scenario in self.rules["enforcement_scenarios"]:
             with self.subTest(case=scenario["case"]):
                 box = policy.Outbox()
-                for recipient, channel in scenario["opt_outs"]:
+                for recipient, channel in scenario.get("opt_outs", []):
                     box.opt_outs.record(policy.OptOut(recipient, channel, "owner.global", f"e:{recipient}:{channel}"))
+                if "inbound" in scenario:  # an opt-out learned from a provider event, before any mapping
+                    inbound = next(c for c in self.rules["inbound_signals"] if c["case"] == scenario["inbound"])
+                    for opt_out in policy.opt_out_from_inbound(inbound["event"], self.rules["recipient_map"]):
+                        box.opt_outs.record(opt_out)
                 _, row = box.queue({"title": "t", "message": "m", "notification_type": "x",
-                                    "recipient_ref": scenario["recipient_ref"]})
+                                    "recipient_ref": scenario["recipient_ref"],
+                                    **({"address": scenario["address"]} if "address" in scenario else {})})
                 outcome = box.attempt(row["id"], scenario["provider"], responses[scenario["provider"]])
                 self.assertEqual(outcome, scenario["expect"])
                 self.assertEqual(len(box.sends), scenario["provider_calls"])
@@ -345,18 +383,21 @@ class ConsumerContractTests(unittest.TestCase):
 
 
 SOURCE = os.environ.get("PLATFORM_NOTIFICATIONS_API")
-IN_CI = os.environ.get("CI", "").lower() in ("1", "true", "yes")
+# Only .github/workflows/check.yml sets this. It is deliberately not keyed off the generic CI
+# variable: other workflows (e.g. a pytest job over tests/) run without the upstream checkout.
+REQUIRE_PARITY = os.environ.get("REQUIRE_SERVER_PARITY", "") == "1"
 
 
-@unittest.skipUnless(SOURCE or IN_CI,
-                     "set PLATFORM_NOTIFICATIONS_API to a platform-notifications-api checkout (CI always does)")
+@unittest.skipUnless(SOURCE or REQUIRE_PARITY,
+                     "set PLATFORM_NOTIFICATIONS_API to a platform-notifications-api checkout (check.yml does)")
 class SourceDriftTests(unittest.TestCase):
     """Compares current-status rules with the server that implements them today."""
 
     @classmethod
     def setUpClass(cls) -> None:
         if not (SOURCE and Path(SOURCE, "src/solo_notifications/app.py").is_file()):
-            raise AssertionError("CI must set PLATFORM_NOTIFICATIONS_API to a platform-notifications-api checkout")
+            raise AssertionError("REQUIRE_SERVER_PARITY=1 needs PLATFORM_NOTIFICATIONS_API set to a "
+                                 "platform-notifications-api checkout")
         cls.app = Path(SOURCE, "src/solo_notifications/app.py").read_text(encoding="utf-8")
         cls.dispatch = Path(SOURCE, "src/solo_notifications/dispatch.py").read_text(encoding="utf-8")
 

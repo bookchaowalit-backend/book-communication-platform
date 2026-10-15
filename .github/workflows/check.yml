@@ -44,4 +44,5 @@ jobs:
       - name: Run offline contract check and tests
         env:
           PLATFORM_NOTIFICATIONS_API: ${{ github.workspace }}/_upstream/platform-notifications-api
+          REQUIRE_SERVER_PARITY: "1"
         run: bash scripts/check.sh

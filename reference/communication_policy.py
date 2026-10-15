@@ -81,6 +81,14 @@ class OptOut:
     channel: str  # a provider name, or "*" for every channel
     source: str  # how it was learned (e.g. line.unfollow, telegram.blocked, email.list_unsubscribe)
     event_id: str  # external event id; the dedupe key for repeated signals
+    address_ref: str | None = None  # hashed provider address, so a later recipient mapping cannot bypass it
+
+
+def address_ref(channel: str, address: str | None) -> str | None:
+    """A stable opaque key for a provider address (the raw address is never stored)."""
+    if not address:
+        return None
+    return f"{channel}-addr-" + hashlib.sha256(f"{channel}:{address}".encode()).hexdigest()[:24]
 
 
 @dataclass
@@ -89,67 +97,94 @@ class OptOutRegistry:
     seen_events: set[str] = field(default_factory=set)
 
     def record(self, opt_out: OptOut) -> str:
-        """``created`` or ``existing`` (a replayed external event id changes nothing)."""
+        """``created`` or ``existing`` (a replayed external event id changes nothing).
+
+        The opt-out is stored under its recipient_ref and, when known, under the hashed
+        provider address, so both a mapped and a not-yet-mapped recipient stay blocked.
+        """
         if opt_out.event_id in self.seen_events:
             return "existing"
         self.seen_events.add(opt_out.event_id)
-        key = (opt_out.recipient_ref, opt_out.channel)
-        if key in self.entries:
-            return "existing"
-        self.entries[key] = opt_out
-        return "created"
+        keys = [(ref, opt_out.channel) for ref in (opt_out.recipient_ref, opt_out.address_ref) if ref]
+        new = [key for key in keys if key not in self.entries]
+        for key in new:
+            self.entries[key] = opt_out
+        return "created" if new else "existing"
 
-    def blocks(self, recipient_ref: str | None, channel: str) -> bool:
-        if not recipient_ref or channel == "console":  # console is a local observation, never a send
+    def blocks(self, recipient_ref: str | None, channel: str, address: str | None = None) -> bool:
+        """Blocked if either the recipient_ref or the hashed provider address has an opt-out."""
+        if channel == "console":  # console is a local observation, never a send
             return False
-        return (recipient_ref, channel) in self.entries or (recipient_ref, "*") in self.entries
+        refs = [ref for ref in (recipient_ref, address_ref(channel, address)) if ref]
+        return any((ref, channel) in self.entries or (ref, "*") in self.entries for ref in refs)
 
 
 def line_recipient_ref(user_id: str, recipients: dict[str, str] | None = None) -> str:
-    """The recipient_ref for a LINE userId: the recipient model's, else a stable opaque hash.
+    """The recipient_ref for a LINE userId: the recipient model's, else the hashed address.
 
-    An unknown user is never dropped: the hash still blocks later sends to that address.
+    An unknown user is not dropped: the opt-out is keyed by the hashed userId (``address_ref``)
+    and ``Outbox.attempt`` checks that key, so a later send to the same userId is suppressed
+    even after the user is mapped to a recipient_ref.
     """
     if recipients and user_id in recipients:
         return recipients[user_id]
-    return "line-user-" + hashlib.sha256(user_id.encode()).hexdigest()[:24]
+    return address_ref("line", user_id) or ""
 
 
-def opt_out_from_inbound(event: dict[str, Any], recipients: dict[str, str] | None = None) -> list[OptOut]:
-    """Every opt-out in a verified inbound provider event (empty if there is none).
+def parse_inbound(event: dict[str, Any], recipients: dict[str, str] | None = None) -> dict[str, Any]:
+    """``{"opt_outs": [...], "errors": [{"index", "reason"}]}`` for a verified inbound event.
 
     The caller must have verified the provider signature on the raw body first
     (contract: signed webhook routes); this function only interprets content.
     LINE batches events: each ``unfollow`` yields its own OptOut with its own
     recipient (``source.userId``). An unfollow without ``webhookEventId`` or
-    ``source.userId`` is rejected (``PolicyError``) so the route can return an
-    error and the signal is not silently collapsed into another event's key.
+    ``source.userId`` is reported as a per-event error (never collapsed into a
+    shared key); the valid events of the same batch are still returned.
     """
     provider = event.get("provider")
+    found: list[OptOut] = []
+    errors: list[dict[str, Any]] = []
     if provider == "line":
-        found = []
-        for item in (event.get("body") or {}).get("events") or []:
+        for index, item in enumerate((event.get("body") or {}).get("events") or []):
             if item.get("type") != "unfollow":
                 continue
             event_id = item.get("webhookEventId")
             user_id = (item.get("source") or {}).get("userId")
             if not isinstance(event_id, str) or not event_id:
-                raise PolicyError(400, "missing_webhook_event_id")
-            if not isinstance(user_id, str) or not user_id:
-                raise PolicyError(400, "missing_source_user")
-            found.append(OptOut(line_recipient_ref(user_id, recipients), "line", "line.unfollow", f"line:{event_id}"))
-        return found
-    if provider == "email" and event.get("kind") == "list_unsubscribe_post":
+                errors.append({"index": index, "reason": "missing_webhook_event_id"})
+            elif not isinstance(user_id, str) or not user_id:
+                errors.append({"index": index, "reason": "missing_source_user"})
+            else:
+                found.append(OptOut(line_recipient_ref(user_id, recipients), "line", "line.unfollow",
+                                    f"line:{event_id}", address_ref("line", user_id)))
+    elif provider == "email" and event.get("kind") == "list_unsubscribe_post":
         if (event.get("body") or "").strip() == "List-Unsubscribe=One-Click":
             if not event.get("event_id"):
-                raise PolicyError(400, "missing_event_id")
-            return [OptOut(event["recipient_ref"], "email", "email.list_unsubscribe", f"email:{event['event_id']}")]
-        return []
-    if provider == "owner" and event.get("kind") == "global_opt_out":
+                errors.append({"index": 0, "reason": "missing_event_id"})
+            else:
+                found.append(OptOut(event["recipient_ref"], "email", "email.list_unsubscribe",
+                                    f"email:{event['event_id']}"))
+    elif provider == "owner" and event.get("kind") == "global_opt_out":
         if not event.get("event_id"):
-            raise PolicyError(400, "missing_event_id")
-        return [OptOut(event["recipient_ref"], "*", "owner.global", f"owner:{event['event_id']}")]
-    return []
+            errors.append({"index": 0, "reason": "missing_event_id"})
+        else:
+            found.append(OptOut(event["recipient_ref"], "*", "owner.global", f"owner:{event['event_id']}"))
+    return {"opt_outs": found, "errors": errors}
+
+
+def opt_out_from_inbound(event: dict[str, Any], recipients: dict[str, str] | None = None) -> list[OptOut]:
+    """Every opt-out in the event; raises ``PolicyError(400, reason)`` if any event was malformed.
+
+    The error carries the valid opt-outs of the batch in ``.opt_outs`` so a route records
+    them before answering 400 (it must not depend on provider redelivery for the valid ones).
+    """
+    parsed = parse_inbound(event, recipients)
+    if parsed["errors"]:
+        error = PolicyError(400, parsed["errors"][0]["reason"])
+        error.opt_outs = parsed["opt_outs"]
+        error.errors = parsed["errors"]
+        raise error
+    return parsed["opt_outs"]
 
 
 # --- provider adapters (synthetic) -----------------------------------------------------------------
@@ -291,7 +326,7 @@ class Outbox:
             return "skipped_delivered"  # a retry never resends a delivered entry
         if row["delivery_attempts"] >= self.max_attempts:
             return "skipped_exhausted"
-        if self.opt_outs.blocks(row.get("recipient_ref"), provider):
+        if self.opt_outs.blocks(row.get("recipient_ref"), provider, row.get("address")):
             row.update(suppressed=True, delivery_error="opted_out")  # no attempt counted, no provider call
             return "suppressed"
         request = build_request(provider, {"id": notification_id, "recipient_ref": row.get("recipient_ref") or "",
@@ -303,7 +338,8 @@ class Outbox:
         result = classify(provider, response)
         if result["opt_out"] and row.get("recipient_ref"):
             self.opt_outs.record(OptOut(row["recipient_ref"], provider, f"{provider}.blocked",
-                                        f"{provider}:blocked:{row['recipient_ref']}"))
+                                        f"{provider}:blocked:{row['recipient_ref']}",
+                                        address_ref(provider, row.get("address"))))
         if result.get("record_as") == "console":
             self.record_delivery(notification_id, "console")
             return "console"

@@ -99,8 +99,11 @@ appears in the fixture.
    `interfaces[].source` paths still name the retired Go notifier. Not changed here (scope).
 8. Inbound `/api/webhook/line` currently queues into `webhook_log`; nothing routes `unfollow`
    events to the communication boundary. The reference interprets every `unfollow` in a batch
-   (recipient per event from `source.userId`; unknown users get a stable opaque ref) and rejects an
-   `unfollow` without `webhookEventId` or `userId` with 400 rather than collapsing it into a shared key.
+   (recipient per event from `source.userId`). Every LINE opt-out is also keyed by the hashed userId
+   and the send-time check uses that key, so an unfollow from a user not yet in the recipient model
+   still blocks later sends to that userId once it is mapped. An `unfollow` without `webhookEventId`
+   or `userId` is a per-event 400 error (never collapsed into a shared key); the valid opt-outs of
+   the same batch are still returned for recording.
 
 ## Owner decision — PROPOSED, NOT ACCEPTED
 
@@ -131,6 +134,9 @@ PLATFORM_NOTIFICATIONS_API=/path/to/platform-notifications-api python3 -m unitte
 
 CI (`.github/workflows/check.yml`) checks out the public `bookchaowalit/platform-notifications-api`
 pinned at `57dd097` into `_upstream/platform-notifications-api` and sets
-`PLATFORM_NOTIFICATIONS_API`, so the five server-parity tests run hosted; with `CI=true` and no
-checkout they fail instead of skipping. Moving the pin is a deliberate change reviewed with the
+`PLATFORM_NOTIFICATIONS_API` plus `REQUIRE_SERVER_PARITY=1`, so the five server-parity tests run
+hosted; with that flag and no checkout they fail instead of skipping. The flag is not tied to the
+generic `CI` variable, so other workflows that run `tests/` without the checkout (PR #1's
+`shared-runtime.yml` pytest job) skip them. The tripwire reads the pinned SHA, so it fires when the
+pin is moved, not when upstream `main` changes. Moving the pin is a deliberate change reviewed with the
 fixture.
