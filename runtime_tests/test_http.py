@@ -68,3 +68,24 @@ def test_applied_migration_checksum_required(setup):
     kwargs={'adapters':{'email':Adapter()}} if 'communication'=='communication' else {}
     with TestClient(create_app(db,verifier,**kwargs)) as c:
         assert c.get('/readyz').status_code==503
+
+
+@pytest.mark.parametrize('kind,target,privilege',[('TABLE', 'message_outbox', 'SELECT'), ('TABLE', 'message_outbox', 'INSERT'), ('TABLE', 'message_outbox', 'UPDATE'), ('SCHEMA', 'public', 'USAGE'), ('TABLE', 'platform_schema_migrations', 'SELECT')])
+def test_readiness_requires_each_effective_privilege(setup,kind,target,privilege):
+    import psycopg
+    from psycopg import sql
+    temp,db,verifier,headers=setup
+    MigrationRunner(temp.admin_dsn,namespace='communication').apply(MIGRATIONS)
+    temp.grant_schema('public')
+    with psycopg.connect(temp.admin_dsn) as admin:
+        admin.execute('REVOKE USAGE ON SCHEMA public FROM PUBLIC')
+    class Adapter:configured=True
+    kwargs={'adapters':{'email':Adapter()}} if 'communication'=='communication' else {}
+    with TestClient(create_app(db,verifier,**kwargs)) as c:
+        assert c.get('/readyz').status_code==200
+        with psycopg.connect(temp.admin_dsn) as admin:
+            admin.execute(sql.SQL('REVOKE {} ON {} {} FROM {}').format(sql.SQL(privilege),sql.SQL(kind),sql.Identifier(target),sql.Identifier(temp.runtime_role)))
+        assert c.get('/readyz').status_code==503
+        with psycopg.connect(temp.admin_dsn) as admin:
+            admin.execute(sql.SQL('GRANT {} ON {} {} TO {}').format(sql.SQL(privilege),sql.SQL(kind),sql.Identifier(target),sql.Identifier(temp.runtime_role)))
+        assert c.get('/readyz').status_code==200

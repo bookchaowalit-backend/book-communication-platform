@@ -22,7 +22,8 @@ no container build or Railway deployment has been executed here.
   (public PEM) or `JWT_JWKS_URL` (trusted HTTPS). Credentials never come from
   files or token-supplied URLs. Use the shared-core workspace RS256 profile.
 - `GET /healthz`, `/readyz`, `/metrics` use shared redacted diagnostics.
-  Readiness checks exact applied migration versions/checksums and table RLS;
+  Readiness checks exact applied migration versions/checksums, table RLS, effective
+  schema USAGE/history SELECT and every required table operation individually;
   missing schema returns generic 503. Setup and serving are separate commands.
 - Python interface `platform_communication.app:create_app(database, verifier)` and
   `platform_communication.migrations.MIGRATIONS` support explicit dependency injection.
@@ -145,3 +146,19 @@ preserves records for reconciliation and has no automatic destructive purge.
   sending quarantine, bounded retry/dead-letter, persisted-before-send state,
   cross-workspace reads and RLS WITH CHECK writes. Provider wire tests use
   only injected HTTP transports and synthetic fixtures.
+
+## Independent review correction — 2026-10-15
+
+Round 1 reproduced 2 assertion-level failures before fixes in this service.
+Readiness now checks effective `public` schema USAGE, history SELECT, and
+separate SELECT/INSERT/UPDATE privileges for writable tables, plus DELETE for
+feature flags. It does not interpret comma-separated privilege lists as an
+all-required check (PostgreSQL treats those as any privilege). Each required
+privilege is revoked independently in a disposable runtime role: ready changes
+200 to 503, then returns to 200 after restoration. All audit forbidden
+UPDATE/DELETE/TRUNCATE checks remain; each is also granted independently in
+regression tests and correctly makes security not ready.
+
+Full PostgreSQL-backed suite after correction: `62 passed`, no database
+skips, one unchanged upstream Starlette/httpx warning. Original offline check
+also passed. Migration 0001 SQL/checksum is unchanged.

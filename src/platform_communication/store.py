@@ -55,6 +55,13 @@ class OutboxStore:
             return bool(c.execute("""UPDATE message_outbox SET status=CASE WHEN %s='retry' THEN CASE WHEN attempts>=max_attempts THEN 'dead' ELSE 'queued' END ELSE %s END,run_at=clock_timestamp()+least(3600,power(2,attempts)::int)*interval '1 second',provider_id=%s,lease_token=NULL,lease_until=NULL WHERE id=%s AND lease_token=%s AND status='sending' AND lease_until>clock_timestamp() RETURNING id""",(outcome,outcome,provider_id,id,token)).fetchone())
     def ready(self):
         with self.db.transaction(UUID(int=0)) as c:
+            # Check every operation individually: a comma privilege list means ANY.
+            required_permissions=c.execute("""SELECT has_schema_privilege(current_user,'public','USAGE')
+                AND has_table_privilege(current_user,'public.platform_schema_migrations','SELECT')
+                AND has_table_privilege(current_user,'public.message_outbox','SELECT')
+                AND has_table_privilege(current_user,'public.message_outbox','INSERT')
+                AND has_table_privilege(current_user,'public.message_outbox','UPDATE')""").fetchone()[0]
+            if not required_permissions:return False
             history=c.execute('SELECT version,checksum FROM platform_schema_migrations WHERE namespace=%s ORDER BY version',('communication',)).fetchall()
             if history!=[(m.version,m.checksum) for m in MIGRATIONS]:return False
             row=c.execute("SELECT relrowsecurity AND relforcerowsecurity FROM pg_class WHERE oid=to_regclass('message_outbox')").fetchone()
