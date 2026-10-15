@@ -1,0 +1,945 @@
+{
+  "fixture": "communication-delivery",
+  "fixture_version": 1,
+  "issue": "BOO-150",
+  "next_gate": "Add provider adapter fixtures, opt-out enforcement, retry idempotency, and a consumer contract.",
+  "contract": "systems/architecture/solo-empire-api-contract-v1.md#signed-and-authenticated-webhook-routes",
+  "synthetic_only": true,
+  "runtime_wired": false,
+  "reference_module": "reference/communication_policy.py",
+  "consumer_contract": "contracts/consumer/communication-delivery.consumer.v1.json",
+  "sources": {
+    "notifications_api": "bookchaowalit/platform-notifications-api@57dd097",
+    "client": "solo-empire@5f034945^:infra/scripts/utils/notifications_store.py",
+    "retired_go_notifier_config": "solo-empire@3bf3637c^:infra/services/notifier/configs/config.yaml"
+  },
+  "gates": {
+    "provider adapter mock": "providers",
+    "retry idempotency": "retry_idempotency",
+    "opt-out enforcement": "opt_out"
+  },
+  "providers": {
+    "telegram": {
+      "status": "current",
+      "source": "platform-notifications-api src/solo_notifications/dispatch.py telegram_sender",
+      "idempotency_key_header": null,
+      "message": {
+        "id": 11,
+        "recipient_ref": "rcpt-0001",
+        "address": "chat-000000001",
+        "text": "Overdue: synthetic task"
+      },
+      "expected_request": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot<redacted>/sendMessage",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "json": {
+          "chat_id": "chat-000000001",
+          "text": "Overdue: synthetic task",
+          "disable_web_page_preview": true
+        }
+      },
+      "responses": [
+        {
+          "case": "success",
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "message_id": 501
+              }
+            }
+          },
+          "outcome": "delivered",
+          "opt_out": false
+        },
+        {
+          "case": "rate_limited",
+          "response": {
+            "status": 429,
+            "body": {
+              "ok": false,
+              "error_code": 429,
+              "parameters": {
+                "retry_after": 5
+              }
+            }
+          },
+          "outcome": "retry",
+          "opt_out": false
+        },
+        {
+          "case": "blocked_by_user",
+          "response": {
+            "status": 403,
+            "body": {
+              "ok": false,
+              "error_code": 403,
+              "description": "Forbidden: bot was blocked by the user"
+            }
+          },
+          "outcome": "dead",
+          "opt_out": true
+        },
+        {
+          "case": "bad_request",
+          "response": {
+            "status": 400,
+            "body": {
+              "ok": false,
+              "error_code": 400,
+              "description": "Bad Request: chat not found"
+            }
+          },
+          "outcome": "dead",
+          "opt_out": false
+        },
+        {
+          "case": "provider_error",
+          "response": {
+            "status": 502,
+            "body": null
+          },
+          "outcome": "uncertain",
+          "opt_out": false
+        },
+        {
+          "case": "timeout",
+          "response": {
+            "transport_error": "timeout"
+          },
+          "outcome": "uncertain",
+          "opt_out": false
+        },
+        {
+          "case": "malformed_success",
+          "response": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {}
+            }
+          },
+          "outcome": "uncertain",
+          "opt_out": false
+        }
+      ]
+    },
+    "line": {
+      "status": "configured-disabled",
+      "source": "retired Go notifier config channels.line (LINE Notify); fixture models the LINE Messaging API push endpoint",
+      "idempotency_key_header": "X-Line-Retry-Key",
+      "message": {
+        "id": 12,
+        "recipient_ref": "rcpt-0002",
+        "address": "U00000000000000000000000000000002",
+        "text": "Due soon: synthetic task"
+      },
+      "expected_request": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "headers": {
+          "Authorization": "Bearer <redacted>",
+          "Content-Type": "application/json",
+          "X-Line-Retry-Key": "e935a5e0-cf5a-5ef0-a127-27a6594b69bd"
+        },
+        "json": {
+          "to": "U00000000000000000000000000000002",
+          "messages": [
+            {
+              "type": "text",
+              "text": "Due soon: synthetic task"
+            }
+          ]
+        }
+      },
+      "responses": [
+        {
+          "case": "success",
+          "response": {
+            "status": 200,
+            "body": {}
+          },
+          "outcome": "delivered",
+          "opt_out": false
+        },
+        {
+          "case": "duplicate_retry_key",
+          "response": {
+            "status": 409,
+            "body": {
+              "message": "The retry key is already accepted"
+            }
+          },
+          "outcome": "delivered",
+          "opt_out": false
+        },
+        {
+          "case": "rate_limited",
+          "response": {
+            "status": 429,
+            "body": {
+              "message": "Too Many Requests"
+            }
+          },
+          "outcome": "retry",
+          "opt_out": false
+        },
+        {
+          "case": "invalid_token",
+          "response": {
+            "status": 401,
+            "body": {
+              "message": "Authentication failed"
+            }
+          },
+          "outcome": "dead",
+          "opt_out": false
+        },
+        {
+          "case": "provider_error",
+          "response": {
+            "status": 500,
+            "body": {
+              "message": "Internal error"
+            }
+          },
+          "outcome": "uncertain",
+          "opt_out": false
+        },
+        {
+          "case": "timeout",
+          "response": {
+            "transport_error": "timeout"
+          },
+          "outcome": "uncertain",
+          "opt_out": false
+        }
+      ],
+      "idempotency_note": "X-Line-Retry-Key = uuid5(RETRY_KEY_NAMESPACE, 'message/<id>'); LINE honours it for 24 h, a 409 means the earlier attempt was accepted"
+    },
+    "slack": {
+      "status": "configured-disabled",
+      "source": "retired Go notifier config channels.slack (incoming webhook)",
+      "idempotency_key_header": null,
+      "message": {
+        "id": 13,
+        "recipient_ref": "rcpt-owner",
+        "address": "owner-channel",
+        "text": "Blocked: synthetic task"
+      },
+      "expected_request": {
+        "method": "POST",
+        "url": "https://hooks.slack.com/services/<redacted>",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "json": {
+          "text": "Blocked: synthetic task"
+        }
+      },
+      "responses": [
+        {
+          "case": "success",
+          "response": {
+            "status": 200,
+            "body": "ok"
+          },
+          "outcome": "delivered",
+          "opt_out": false
+        },
+        {
+          "case": "rate_limited",
+          "response": {
+            "status": 429,
+            "body": "rate_limited"
+          },
+          "outcome": "retry",
+          "opt_out": false
+        },
+        {
+          "case": "webhook_revoked",
+          "response": {
+            "status": 404,
+            "body": "no_service"
+          },
+          "outcome": "dead",
+          "opt_out": false
+        },
+        {
+          "case": "provider_error",
+          "response": {
+            "status": 503,
+            "body": null
+          },
+          "outcome": "uncertain",
+          "opt_out": false
+        },
+        {
+          "case": "connection_refused",
+          "response": {
+            "transport_error": "connection_refused"
+          },
+          "outcome": "retry",
+          "opt_out": false
+        }
+      ]
+    },
+    "email": {
+      "status": "configured-disabled",
+      "source": "retired Go notifier config channels.email (SMTP)",
+      "idempotency_key_header": null,
+      "message": {
+        "id": 14,
+        "recipient_ref": "rcpt-0004",
+        "address": "person-0004@example.invalid",
+        "text": "Stale: synthetic task",
+        "subject": "Notification"
+      },
+      "expected_request": {
+        "method": "SMTP",
+        "host": "smtp.example.invalid",
+        "port": 587,
+        "starttls": true,
+        "auth": {
+          "username": "<redacted>",
+          "password": "<redacted>"
+        },
+        "envelope": {
+          "mail_from": "notifier@example.invalid",
+          "rcpt_to": [
+            "person-0004@example.invalid"
+          ]
+        },
+        "headers": {
+          "Message-ID": "<message/14@notifier.example.invalid>",
+          "Subject": "Notification",
+          "List-Unsubscribe": "<https://notify.example.invalid/u/rcpt-0004>",
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"
+        },
+        "body": "Stale: synthetic task"
+      },
+      "responses": [
+        {
+          "case": "accepted",
+          "response": {
+            "smtp_code": 250
+          },
+          "outcome": "delivered",
+          "opt_out": false
+        },
+        {
+          "case": "temporary_failure",
+          "response": {
+            "smtp_code": 451
+          },
+          "outcome": "retry",
+          "opt_out": false
+        },
+        {
+          "case": "mailbox_unavailable",
+          "response": {
+            "smtp_code": 550
+          },
+          "outcome": "dead",
+          "opt_out": false
+        },
+        {
+          "case": "timeout_after_data",
+          "response": {
+            "transport_error": "timeout"
+          },
+          "outcome": "uncertain",
+          "opt_out": false
+        },
+        {
+          "case": "no_reply",
+          "response": {},
+          "outcome": "uncertain",
+          "opt_out": false
+        }
+      ],
+      "idempotency_note": "Message-ID is stable per message as hygiene only; SMTP servers do not deduplicate on it, so a retry after an uncertain DATA timeout can deliver twice (at-least-once)"
+    },
+    "console": {
+      "status": "current",
+      "source": "platform-notifications-api app.py record_delivery (console is a local observation, never a delivery)",
+      "idempotency_key_header": null,
+      "message": {
+        "id": 15,
+        "recipient_ref": null,
+        "address": null,
+        "text": "Overdue: synthetic task"
+      },
+      "expected_request": {
+        "method": "LOCAL",
+        "stream": "stdout",
+        "text": "Overdue: synthetic task"
+      },
+      "responses": [
+        {
+          "case": "observed",
+          "response": {},
+          "outcome": "delivered",
+          "record_as": "console",
+          "opt_out": false
+        }
+      ]
+    }
+  },
+  "retry_idempotency": {
+    "max_attempts": 3,
+    "rules": [
+      {
+        "id": "queue-dedupe",
+        "status": "current",
+        "rule": "A queue with a known dedupe_key returns outcome=existing and the first entry unchanged; no second entry is created."
+      },
+      {
+        "id": "dedupe-key-construction",
+        "status": "current",
+        "rule": "dedupe_key = 'k-' + sha256(json.dumps(parts, default=str, ensure_ascii=False))[:60]."
+      },
+      {
+        "id": "attempt-counting",
+        "status": "current",
+        "rule": "delivered and failed each add one attempt; console adds none and is never a delivery (422 console_is_not_delivery)."
+      },
+      {
+        "id": "retry-ceiling",
+        "status": "current",
+        "rule": "Pending = undelivered and delivery_attempts < 3; an entry at the ceiling is never sent again."
+      },
+      {
+        "id": "no-resend-after-delivery",
+        "status": "current",
+        "rule": "A delivered entry is never sent again by a retry."
+      },
+      {
+        "id": "provider-idempotency-key",
+        "status": "proposed",
+        "rule": "Only providers that deduplicate on a caller key get one: LINE X-Line-Retry-Key = uuid5 of 'message/<id>', identical on every retry of one entry (honoured by LINE for 24 h)."
+      },
+      {
+        "id": "dead-stops-retry",
+        "status": "proposed",
+        "rule": "A dead provider outcome (non-429 4xx) moves the entry to the ceiling instead of retrying it."
+      },
+      {
+        "id": "at-least-once-providers",
+        "status": "current",
+        "rule": "telegram, slack and email have no provider deduplication: an uncertain outcome retried can deliver twice. Email's stable Message-ID is hygiene, not idempotency."
+      }
+    ],
+    "golden_dedupe_keys": [
+      {
+        "parts": [
+          "notification-runner",
+          7,
+          101,
+          "overdue",
+          "todo",
+          "2026-10-14",
+          2,
+          "2026-10-15"
+        ],
+        "key": "k-b53b2f536d7e3726c1361bada142bfb2d2e634a0d98a1f9636a96f51fa06"
+      },
+      {
+        "parts": [
+          "engagement-review",
+          "eng-0001",
+          "2026-10-15"
+        ],
+        "key": "k-96cb4a1a8b7bc19741ae5559954f708422baedef8262d62b4d685b290f1d"
+      },
+      {
+        "parts": [
+          "ไทย",
+          null,
+          1.5
+        ],
+        "key": "k-42910d7a9a3cc8fd46ba839429756480e70828c477801c52e956000a4502"
+      }
+    ],
+    "scenarios": [
+      {
+        "case": "retry_then_success",
+        "provider": "telegram",
+        "responses": [
+          {
+            "transport_error": "timeout"
+          },
+          {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "result": {
+                "message_id": 7
+              }
+            }
+          }
+        ],
+        "expect": [
+          "uncertain",
+          "delivered"
+        ],
+        "final_attempts": 2,
+        "delivered": true
+      },
+      {
+        "case": "exhausted",
+        "provider": "slack",
+        "responses": [
+          {
+            "status": 503
+          },
+          {
+            "status": 503
+          },
+          {
+            "status": 503
+          },
+          {
+            "status": 200,
+            "body": "ok"
+          }
+        ],
+        "expect": [
+          "uncertain",
+          "uncertain",
+          "uncertain",
+          "skipped_exhausted"
+        ],
+        "final_attempts": 3,
+        "delivered": false
+      },
+      {
+        "case": "no_resend_after_delivery",
+        "provider": "line",
+        "responses": [
+          {
+            "status": 200,
+            "body": {}
+          },
+          {
+            "status": 200,
+            "body": {}
+          }
+        ],
+        "expect": [
+          "delivered",
+          "skipped_delivered"
+        ],
+        "final_attempts": 1,
+        "delivered": true
+      },
+      {
+        "case": "line_retry_key_dedupes_uncertain",
+        "provider": "line",
+        "responses": [
+          {
+            "status": 500
+          },
+          {
+            "status": 409
+          }
+        ],
+        "expect": [
+          "uncertain",
+          "delivered"
+        ],
+        "final_attempts": 2,
+        "delivered": true
+      },
+      {
+        "case": "dead_stops_retry",
+        "provider": "email",
+        "responses": [
+          {
+            "smtp_code": 550
+          },
+          {
+            "smtp_code": 250
+          }
+        ],
+        "expect": [
+          "dead",
+          "skipped_exhausted"
+        ],
+        "final_attempts": 3,
+        "delivered": false
+      },
+      {
+        "case": "email_uncertain_retry_may_duplicate",
+        "provider": "email",
+        "responses": [
+          {
+            "transport_error": "timeout"
+          },
+          {
+            "smtp_code": 250
+          }
+        ],
+        "expect": [
+          "uncertain",
+          "delivered"
+        ],
+        "final_attempts": 2,
+        "delivered": true,
+        "provider_calls": 2,
+        "duplicate_possible": true
+      }
+    ]
+  },
+  "opt_out": {
+    "status": "proposed",
+    "rules": [
+      {
+        "id": "suppress-before-send",
+        "rule": "A queued entry whose recipient_ref has an opt-out for its channel (or '*') is suppressed before any provider call; no attempt is counted."
+      },
+      {
+        "id": "console-exempt",
+        "rule": "console is a local observation, not a send, so opt-out never applies to it."
+      },
+      {
+        "id": "signal-dedupe",
+        "rule": "Opt-out signals are deduplicated by external event id; a replayed webhook changes nothing."
+      },
+      {
+        "id": "provider-signal",
+        "rule": "Telegram 403 'bot was blocked by the user' records an opt-out for that recipient and channel."
+      },
+      {
+        "id": "verified-inbound-only",
+        "rule": "Inbound opt-out events are interpreted only after the route verified the provider signature on the raw body (x-line-signature)."
+      },
+      {
+        "id": "batch-per-event",
+        "rule": "Every unfollow in a LINE webhook batch yields its own opt-out, with the recipient resolved per event from source.userId. Every LINE opt-out is also keyed by the hashed userId (address_ref) and enforcement checks that key, so an unfollow from a not-yet-mapped user still blocks later sends to that userId after it is mapped."
+      },
+      {
+        "id": "reject-missing-event-id",
+        "rule": "An unfollow without webhookEventId or source.userId is reported as a per-event 400 error, never collapsed into a shared key; the valid opt-outs of the same batch are still recorded."
+      }
+    ],
+    "inbound_signals": [
+      {
+        "case": "line_unfollow",
+        "event": {
+          "provider": "line",
+          "body": {
+            "destination": "Uxxxxxxxx",
+            "events": [
+              {
+                "type": "unfollow",
+                "mode": "active",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000002"
+                },
+                "webhookEventId": "01SYNTHETICEVENT0000000002"
+              }
+            ]
+          }
+        },
+        "expect": [
+          {
+            "recipient_ref": "rcpt-0002",
+            "channel": "line",
+            "source": "line.unfollow",
+            "event_id": "line:01SYNTHETICEVENT0000000002"
+          }
+        ]
+      },
+      {
+        "case": "line_batch_two_unfollows",
+        "event": {
+          "provider": "line",
+          "body": {
+            "destination": "Uxxxxxxxx",
+            "events": [
+              {
+                "type": "unfollow",
+                "mode": "active",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000002"
+                },
+                "webhookEventId": "01SYNTHETICEVENT0000000010"
+              },
+              {
+                "type": "message",
+                "webhookEventId": "01SYNTHETICEVENT0000000011",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000002"
+                }
+              },
+              {
+                "type": "unfollow",
+                "mode": "active",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000005"
+                },
+                "webhookEventId": "01SYNTHETICEVENT0000000012"
+              }
+            ]
+          }
+        },
+        "expect": [
+          {
+            "recipient_ref": "rcpt-0002",
+            "channel": "line",
+            "source": "line.unfollow",
+            "event_id": "line:01SYNTHETICEVENT0000000010"
+          },
+          {
+            "recipient_ref": "rcpt-0005",
+            "channel": "line",
+            "source": "line.unfollow",
+            "event_id": "line:01SYNTHETICEVENT0000000012"
+          }
+        ]
+      },
+      {
+        "case": "line_unknown_user_kept",
+        "event": {
+          "provider": "line",
+          "body": {
+            "destination": "Uxxxxxxxx",
+            "events": [
+              {
+                "type": "unfollow",
+                "mode": "active",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000009"
+                },
+                "webhookEventId": "01SYNTHETICEVENT0000000013"
+              }
+            ]
+          }
+        },
+        "expect": [
+          {
+            "recipient_ref": "line-addr-2a0a53b71a33d19222e3c07f",
+            "channel": "line",
+            "source": "line.unfollow",
+            "event_id": "line:01SYNTHETICEVENT0000000013"
+          }
+        ]
+      },
+      {
+        "case": "line_unfollow_missing_event_id",
+        "event": {
+          "provider": "line",
+          "body": {
+            "destination": "Uxxxxxxxx",
+            "events": [
+              {
+                "type": "unfollow",
+                "mode": "active",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000002"
+                }
+              }
+            ]
+          }
+        },
+        "expect_error": "missing_webhook_event_id"
+      },
+      {
+        "case": "line_unfollow_missing_user",
+        "event": {
+          "provider": "line",
+          "body": {
+            "destination": "Uxxxxxxxx",
+            "events": [
+              {
+                "type": "unfollow",
+                "webhookEventId": "01SYNTHETICEVENT0000000014",
+                "source": {
+                  "type": "group",
+                  "groupId": "C0"
+                }
+              }
+            ]
+          }
+        },
+        "expect_error": "missing_source_user"
+      },
+      {
+        "case": "line_batch_one_malformed",
+        "event": {
+          "provider": "line",
+          "body": {
+            "destination": "Uxxxxxxxx",
+            "events": [
+              {
+                "type": "unfollow",
+                "mode": "active",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000002"
+                }
+              },
+              {
+                "webhookEventId": "01SYNTHETICEVENT0000000020",
+                "type": "unfollow",
+                "mode": "active",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000005"
+                }
+              }
+            ]
+          }
+        },
+        "expect_error": "missing_webhook_event_id",
+        "expect_errors": [
+          {
+            "index": 0,
+            "reason": "missing_webhook_event_id"
+          }
+        ],
+        "expect_partial": [
+          {
+            "recipient_ref": "rcpt-0005",
+            "channel": "line",
+            "source": "line.unfollow",
+            "event_id": "line:01SYNTHETICEVENT0000000020"
+          }
+        ]
+      },
+      {
+        "case": "line_follow_is_not_opt_out",
+        "event": {
+          "provider": "line",
+          "body": {
+            "destination": "Uxxxxxxxx",
+            "events": [
+              {
+                "type": "follow",
+                "webhookEventId": "01SYNTHETICEVENT0000000003",
+                "source": {
+                  "type": "user",
+                  "userId": "U00000000000000000000000000000002"
+                }
+              }
+            ]
+          }
+        },
+        "expect": []
+      },
+      {
+        "case": "email_one_click",
+        "event": {
+          "provider": "email",
+          "kind": "list_unsubscribe_post",
+          "recipient_ref": "rcpt-0004",
+          "event_id": "unsub-0004",
+          "body": "List-Unsubscribe=One-Click"
+        },
+        "expect": [
+          {
+            "recipient_ref": "rcpt-0004",
+            "channel": "email",
+            "source": "email.list_unsubscribe",
+            "event_id": "email:unsub-0004"
+          }
+        ]
+      },
+      {
+        "case": "owner_global",
+        "event": {
+          "provider": "owner",
+          "kind": "global_opt_out",
+          "recipient_ref": "rcpt-0001",
+          "event_id": "global-0001"
+        },
+        "expect": [
+          {
+            "recipient_ref": "rcpt-0001",
+            "channel": "*",
+            "source": "owner.global",
+            "event_id": "owner:global-0001"
+          }
+        ]
+      }
+    ],
+    "enforcement_scenarios": [
+      {
+        "case": "line_opted_out",
+        "opt_outs": [
+          [
+            "rcpt-0002",
+            "line"
+          ]
+        ],
+        "provider": "line",
+        "recipient_ref": "rcpt-0002",
+        "expect": "suppressed",
+        "provider_calls": 0
+      },
+      {
+        "case": "other_channel_still_allowed",
+        "opt_outs": [
+          [
+            "rcpt-0002",
+            "line"
+          ]
+        ],
+        "provider": "telegram",
+        "recipient_ref": "rcpt-0002",
+        "expect": "delivered",
+        "provider_calls": 1
+      },
+      {
+        "case": "global_blocks_all",
+        "opt_outs": [
+          [
+            "rcpt-0001",
+            "*"
+          ]
+        ],
+        "provider": "email",
+        "recipient_ref": "rcpt-0001",
+        "expect": "suppressed",
+        "provider_calls": 0
+      },
+      {
+        "case": "console_exempt",
+        "opt_outs": [
+          [
+            "rcpt-0001",
+            "*"
+          ]
+        ],
+        "provider": "console",
+        "recipient_ref": "rcpt-0001",
+        "expect": "console",
+        "provider_calls": 1
+      },
+      {
+        "case": "unknown_user_unfollow_then_mapped_send",
+        "inbound": "line_unknown_user_kept",
+        "provider": "line",
+        "recipient_ref": "rcpt-0009",
+        "address": "U00000000000000000000000000000009",
+        "expect": "suppressed",
+        "provider_calls": 0
+      }
+    ],
+    "recipient_map": {
+      "U00000000000000000000000000000002": "rcpt-0002",
+      "U00000000000000000000000000000005": "rcpt-0005"
+    }
+  }
+}
