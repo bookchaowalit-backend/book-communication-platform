@@ -25,6 +25,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Check out platform-notifications-api (pinned, for server-parity tests)
+        uses: actions/checkout@v4
+        with:
+          repository: bookchaowalit/platform-notifications-api
+          ref: 57dd0975442f469a2bc3443740974454801fde39
+          path: _upstream/platform-notifications-api
+          persist-credentials: false
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -34,4 +42,6 @@ jobs:
         run: python3 scripts/check_schema_pin.py
 
       - name: Run offline contract check and tests
+        env:
+          PLATFORM_NOTIFICATIONS_API: ${{ github.workspace }}/_upstream/platform-notifications-api
         run: bash scripts/check.sh

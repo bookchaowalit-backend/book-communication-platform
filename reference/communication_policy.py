@@ -17,8 +17,11 @@ Rules encoded here:
 * ``classify`` - maps a synthetic provider response to
   delivered / retry / dead / uncertain, and detects provider opt-out signals.
 * ``build_request`` - the request each provider adapter would send, with the
-  provider idempotency key where the provider supports one and credentials
-  replaced by ``<redacted>``.
+  provider idempotency key where the provider supports one (LINE only: a UUID
+  derived from the notification id, so every retry carries the same key) and
+  credentials replaced by ``<redacted>``. Email's ``Message-ID`` is stable but
+  is NOT provider idempotency: an SMTP retry after an uncertain DATA timeout
+  can deliver twice.
 * opt-out - a delivery to an opted-out recipient/channel is suppressed before
   any provider call (PROPOSED: the current source has no opt-out store).
 """
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -35,9 +39,14 @@ REDACTED = "<redacted>"
 PROVIDERS = ("telegram", "line", "slack", "email", "console")
 DELIVERY_OUTCOMES = ("delivered", "failed", "console")  # POST /v1/notifications/{id}/delivery
 PROVIDER_OUTCOMES = ("delivered", "retry", "dead", "uncertain")
-# Providers whose API accepts a caller idempotency key, so a retry after an
-# uncertain outcome cannot produce a second message.
-IDEMPOTENT_PROVIDERS = {"line": "X-Line-Retry-Key", "email": "Message-ID"}
+# Providers whose API deduplicates on a caller key, so a retry after an
+# uncertain outcome cannot produce a second message (LINE honours the key for 24 h).
+IDEMPOTENT_PROVIDERS = {"line": "X-Line-Retry-Key"}
+# At-least-once providers: an uncertain outcome retried may deliver twice. Email keeps a
+# stable Message-ID as hygiene only; SMTP servers do not deduplicate on it.
+NON_IDEMPOTENT_PROVIDERS = ("telegram", "slack", "email")
+RETRY_KEY_NAMESPACE = uuid.UUID("6f1c2a52-7d8e-5b0a-9a3c-150b00150150")  # fixed; changing it changes every key
+OUTBOX_FIELDS = ("id", "delivered_at", "delivery_channel", "delivery_error", "delivery_attempts", "suppressed")
 
 
 class PolicyError(ValueError):
@@ -54,9 +63,14 @@ def dedupe_key(*parts: Any) -> str:
     return "k-" + hashlib.sha256(json.dumps(parts, default=str, ensure_ascii=False).encode()).hexdigest()[:60]
 
 
-def provider_idempotency_key(notification_id: int, attempt_scope: str = "message") -> str:
+def provider_idempotency_key(notification_id: int) -> str:
     """Stable per message (not per attempt): every retry of one entry reuses it."""
-    return f"{attempt_scope}/{int(notification_id)}"
+    return f"message/{int(notification_id)}"
+
+
+def line_retry_key(notification_id: int) -> str:
+    """X-Line-Retry-Key: LINE requires a UUID, so derive one from the stable message key."""
+    return str(uuid.uuid5(RETRY_KEY_NAMESPACE, provider_idempotency_key(notification_id)))
 
 
 # --- opt-out ---------------------------------------------------------------------------------------
@@ -91,27 +105,51 @@ class OptOutRegistry:
         return (recipient_ref, channel) in self.entries or (recipient_ref, "*") in self.entries
 
 
-def opt_out_from_inbound(event: dict[str, Any]) -> OptOut | None:
-    """An opt-out from a verified inbound provider event, or None if the event is not one.
+def line_recipient_ref(user_id: str, recipients: dict[str, str] | None = None) -> str:
+    """The recipient_ref for a LINE userId: the recipient model's, else a stable opaque hash.
+
+    An unknown user is never dropped: the hash still blocks later sends to that address.
+    """
+    if recipients and user_id in recipients:
+        return recipients[user_id]
+    return "line-user-" + hashlib.sha256(user_id.encode()).hexdigest()[:24]
+
+
+def opt_out_from_inbound(event: dict[str, Any], recipients: dict[str, str] | None = None) -> list[OptOut]:
+    """Every opt-out in a verified inbound provider event (empty if there is none).
 
     The caller must have verified the provider signature on the raw body first
     (contract: signed webhook routes); this function only interprets content.
+    LINE batches events: each ``unfollow`` yields its own OptOut with its own
+    recipient (``source.userId``). An unfollow without ``webhookEventId`` or
+    ``source.userId`` is rejected (``PolicyError``) so the route can return an
+    error and the signal is not silently collapsed into another event's key.
     """
     provider = event.get("provider")
     if provider == "line":
-        body = event.get("body") or {}
-        for item in body.get("events") or []:
-            if item.get("type") == "unfollow":
-                return OptOut(event["recipient_ref"], "line", "line.unfollow",
-                              f"line:{item.get('webhookEventId')}")
-        return None
+        found = []
+        for item in (event.get("body") or {}).get("events") or []:
+            if item.get("type") != "unfollow":
+                continue
+            event_id = item.get("webhookEventId")
+            user_id = (item.get("source") or {}).get("userId")
+            if not isinstance(event_id, str) or not event_id:
+                raise PolicyError(400, "missing_webhook_event_id")
+            if not isinstance(user_id, str) or not user_id:
+                raise PolicyError(400, "missing_source_user")
+            found.append(OptOut(line_recipient_ref(user_id, recipients), "line", "line.unfollow", f"line:{event_id}"))
+        return found
     if provider == "email" and event.get("kind") == "list_unsubscribe_post":
         if (event.get("body") or "").strip() == "List-Unsubscribe=One-Click":
-            return OptOut(event["recipient_ref"], "email", "email.list_unsubscribe", f"email:{event['event_id']}")
-        return None
+            if not event.get("event_id"):
+                raise PolicyError(400, "missing_event_id")
+            return [OptOut(event["recipient_ref"], "email", "email.list_unsubscribe", f"email:{event['event_id']}")]
+        return []
     if provider == "owner" and event.get("kind") == "global_opt_out":
-        return OptOut(event["recipient_ref"], "*", "owner.global", f"owner:{event['event_id']}")
-    return None
+        if not event.get("event_id"):
+            raise PolicyError(400, "missing_event_id")
+        return [OptOut(event["recipient_ref"], "*", "owner.global", f"owner:{event['event_id']}")]
+    return []
 
 
 # --- provider adapters (synthetic) -----------------------------------------------------------------
@@ -126,7 +164,7 @@ def build_request(provider: str, message: dict[str, Any]) -> dict[str, Any]:
     if provider == "line":
         return {"method": "POST", "url": "https://api.line.me/v2/bot/message/push",
                 "headers": {"Authorization": f"Bearer {REDACTED}", "Content-Type": "application/json",
-                            "X-Line-Retry-Key": message["idempotency_uuid"]},
+                            "X-Line-Retry-Key": line_retry_key(message["id"])},
                 "json": {"to": message["address"], "messages": [{"type": "text", "text": text[:5000]}]}}
     if provider == "slack":
         return {"method": "POST", "url": f"https://hooks.slack.com/services/{REDACTED}",
@@ -159,7 +197,9 @@ def classify(provider: str, response: dict[str, Any]) -> dict[str, Any]:
     status = response.get("status")
     body = response.get("body")
     if provider == "email":
-        code = int(response.get("smtp_code", 0))
+        if "smtp_code" not in response:
+            return {"outcome": "uncertain", "opt_out": False, "error": "smtp_no_reply"}
+        code = int(response["smtp_code"])
         if code == 250:
             return {"outcome": "delivered", "opt_out": False, "error": None}
         if 400 <= code < 500:
@@ -202,15 +242,17 @@ class Outbox:
     sends: list[dict[str, Any]] = field(default_factory=list)
 
     def queue(self, fields: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        reserved = sorted(set(fields) & set(OUTBOX_FIELDS))
+        if reserved:  # the outbox owns its state; a caller cannot preset it
+            raise PolicyError(422, "read_only_field:" + ",".join(reserved))
         key = fields.get("dedupe_key")
         if key is not None and not 8 <= len(key) <= 200:
             raise PolicyError(422, "invalid_dedupe_key")
         if key is not None and key in self.by_key:
             return "existing", dict(self.rows[self.by_key[key]])
-        row = {"id": len(self.rows) + 1, "channel": fields.get("channel", "console"),
-               "recipient_ref": fields.get("recipient_ref"), "dedupe_key": key, "delivered_at": None,
-               "delivery_channel": None, "delivery_error": None, "delivery_attempts": 0, "suppressed": False,
-               **{k: v for k, v in fields.items() if k not in ("dedupe_key",)}}
+        row = {"channel": "console", "recipient_ref": None, **fields, "dedupe_key": key,
+               "id": len(self.rows) + 1, "delivered_at": None, "delivery_channel": None, "delivery_error": None,
+               "delivery_attempts": 0, "suppressed": False}
         self.rows[row["id"]] = row
         if key is not None:
             self.by_key[key] = row["id"]
@@ -252,9 +294,12 @@ class Outbox:
         if self.opt_outs.blocks(row.get("recipient_ref"), provider):
             row.update(suppressed=True, delivery_error="opted_out")  # no attempt counted, no provider call
             return "suppressed"
-        self.sends.append({"id": notification_id, "provider": provider,
-                           "idempotency_key": provider_idempotency_key(notification_id)
-                           if provider in IDEMPOTENT_PROVIDERS else None})
+        request = build_request(provider, {"id": notification_id, "recipient_ref": row.get("recipient_ref") or "",
+                                           "address": row.get("address") or "addr-placeholder",
+                                           "text": row.get("message") or "", "subject": row.get("title")})
+        header = IDEMPOTENT_PROVIDERS.get(provider)
+        self.sends.append({"id": notification_id, "provider": provider, "request": request,
+                           "idempotency_key": request["headers"][header] if header else None})
         result = classify(provider, response)
         if result["opt_out"] and row.get("recipient_ref"):
             self.opt_outs.record(OptOut(row["recipient_ref"], provider, f"{provider}.blocked",

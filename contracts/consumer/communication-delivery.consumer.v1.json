@@ -9,8 +9,14 @@
   "upstream_contract": "systems/architecture/solo-empire-api-contract-v1.md#signed-and-authenticated-webhook-routes",
   "auth": {
     "scheme": "Authorization: Bearer <automation token>",
-    "headers": ["X-Empire-Channel", "X-Correlation-Id"],
-    "permissions": ["notifications.notification:read", "notifications.notification:write"],
+    "headers": [
+      "X-Empire-Channel",
+      "X-Correlation-Id"
+    ],
+    "permissions": [
+      "notifications.notification:read",
+      "notifications.notification:write"
+    ],
     "redirects": "never followed by clients"
   },
   "operations": [
@@ -19,11 +25,45 @@
       "status": "current",
       "method": "POST",
       "path": "/v1/notifications",
-      "request_required": ["title", "message", "notification_type"],
-      "request_optional": ["rule_id", "task_id", "severity", "channel", "task_title", "task_status", "task_priority", "task_due_date", "task_project", "metadata", "dedupe_key"],
-      "request_proposed": ["recipient_ref"],
-      "limits": {"title": 500, "message": 8000, "dedupe_key_min": 8, "dedupe_key_max": 200, "notification_type_pattern": "^[a-z][a-z0-9_]{0,59}$"},
-      "response": {"status": 201, "fields": ["outcome", "notification"], "outcome": ["created", "existing"]},
+      "request_required": [
+        "title",
+        "message",
+        "notification_type"
+      ],
+      "request_optional": [
+        "rule_id",
+        "task_id",
+        "severity",
+        "channel",
+        "task_title",
+        "task_status",
+        "task_priority",
+        "task_due_date",
+        "task_project",
+        "metadata",
+        "dedupe_key"
+      ],
+      "request_proposed": [
+        "recipient_ref"
+      ],
+      "limits": {
+        "title": 500,
+        "message": 8000,
+        "dedupe_key_min": 8,
+        "dedupe_key_max": 200,
+        "notification_type_pattern": "^[a-z][a-z0-9_]{0,59}$"
+      },
+      "response": {
+        "status": 201,
+        "fields": [
+          "outcome",
+          "notification"
+        ],
+        "outcome": [
+          "created",
+          "existing"
+        ]
+      },
       "idempotency": "dedupe_key; a repeat returns outcome=existing with the first entry unchanged (concurrent repeats keep the first)"
     },
     {
@@ -31,10 +71,29 @@
       "status": "current",
       "method": "POST",
       "path": "/v1/notifications/{id}/delivery",
-      "request_required": ["outcome"],
-      "request_optional": ["channel", "error"],
-      "outcome": ["delivered", "failed", "console"],
-      "errors": [{"status": 422, "reason": "console_is_not_delivery", "when": "outcome=delivered without a non-console channel"}, {"status": 404, "reason": "not_found"}],
+      "request_required": [
+        "outcome"
+      ],
+      "request_optional": [
+        "channel",
+        "error"
+      ],
+      "outcome": [
+        "delivered",
+        "failed",
+        "console"
+      ],
+      "errors": [
+        {
+          "status": 422,
+          "reason": "console_is_not_delivery",
+          "when": "outcome=delivered without a non-console channel"
+        },
+        {
+          "status": 404,
+          "reason": "not_found"
+        }
+      ],
       "idempotency": "not idempotent: each delivered/failed call counts one attempt; callers retry only 5xx, at most 3 times"
     },
     {
@@ -42,7 +101,19 @@
       "status": "current",
       "method": "GET",
       "path": "/v1/notifications",
-      "query": ["notification_type", "since", "until", "task_id", "rule_id", "undelivered", "max_attempts", "dedupe_key", "order", "limit", "offset"],
+      "query": [
+        "notification_type",
+        "since",
+        "until",
+        "task_id",
+        "rule_id",
+        "undelivered",
+        "max_attempts",
+        "dedupe_key",
+        "order",
+        "limit",
+        "offset"
+      ],
       "retry_selector": "undelivered=true&max_attempts=3"
     },
     {
@@ -50,31 +121,86 @@
       "status": "proposed",
       "method": "POST",
       "path": "/v1/opt-outs",
-      "request_required": ["recipient_ref", "channel", "source", "event_id"],
-      "response": {"outcome": ["created", "existing"]},
+      "request_required": [
+        "recipient_ref",
+        "channel",
+        "source",
+        "event_id"
+      ],
+      "response": {
+        "outcome": [
+          "created",
+          "existing"
+        ]
+      },
       "idempotency": "event_id; a replayed provider event returns existing"
     }
   ],
   "retry": {
     "max_attempts": 3,
     "delivery_semantics": "at-least-once (a result that cannot be recorded may be resent next run)",
-    "provider_idempotency_keys": {"line": "X-Line-Retry-Key", "email": "Message-ID"},
-    "non_idempotent_providers": ["telegram", "slack"]
+    "provider_idempotency_keys": {
+      "line": "X-Line-Retry-Key"
+    },
+    "non_idempotent_providers": [
+      "telegram",
+      "slack",
+      "email"
+    ],
+    "provider_idempotency_key_derivation": "line: uuid5(fixed namespace, 'message/<notification id>'), identical on every retry; LINE honours it for 24 h",
+    "email_message_id": "stable '<message/<id>@...>' for hygiene only; SMTP does not deduplicate on it, so an uncertain retry can duplicate"
   },
   "opt_out": {
     "status": "proposed",
     "enforced_by": "the communication boundary before any provider call; callers never filter themselves",
     "suppressed_result": "entry stays undelivered with delivery_error=opted_out and no attempt counted",
-    "signals": ["line.unfollow", "telegram.blocked", "email.list_unsubscribe", "owner.global"]
+    "signals": [
+      "line.unfollow",
+      "telegram.blocked",
+      "email.list_unsubscribe",
+      "owner.global"
+    ],
+    "inbound_rules": "each unfollow in a LINE batch is its own opt-out with its own recipient (source.userId); an unfollow without webhookEventId or userId is rejected with 400"
   },
   "inbound_webhooks": [
-    {"method": "POST", "path": "/api/webhook/line", "auth": "x-line-signature", "idempotency": "derived external event ID", "use": "unfollow -> opt-out signal"}
+    {
+      "method": "POST",
+      "path": "/api/webhook/line",
+      "auth": "x-line-signature",
+      "idempotency": "derived external event ID",
+      "use": "unfollow -> opt-out signal"
+    }
   ],
-  "providers": ["telegram", "line", "slack", "email", "console"],
+  "providers": [
+    "telegram",
+    "line",
+    "slack",
+    "email",
+    "console"
+  ],
   "privacy": {
     "recipient": "callers pass an opaque recipient_ref; addresses and provider credentials stay inside the boundary",
-    "never_returned": ["provider tokens", "webhook URLs", "SMTP credentials"],
+    "never_returned": [
+      "provider tokens",
+      "webhook URLs",
+      "SMTP credentials"
+    ],
     "errors": "provider errors are reduced to a short code (e.g. telegram_http_403); URLs that embed tokens are never logged"
   },
-  "error_shape": {"body": {"detail": {"error": "string", "reason": "string"}}, "statuses": [400, 401, 403, 404, 422, 503]}
+  "error_shape": {
+    "body": {
+      "detail": {
+        "error": "string",
+        "reason": "string"
+      }
+    },
+    "statuses": [
+      400,
+      401,
+      403,
+      404,
+      422,
+      503
+    ]
+  }
 }

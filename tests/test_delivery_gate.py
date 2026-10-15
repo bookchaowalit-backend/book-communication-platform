@@ -3,7 +3,8 @@
 The fixture is checked against the reference policy code (``reference/communication_policy.py``),
 ``contract.json`` and the consumer contract, so a provider, rule or field that drifts in one place
 fails here. ``SourceDriftTests`` also compares with a local checkout of the current server
-(``platform-notifications-api``) when ``PLATFORM_NOTIFICATIONS_API`` points at one; CI skips it.
+(``platform-notifications-api``) at ``PLATFORM_NOTIFICATIONS_API``; CI checks out the pinned
+public repository and sets it, and the tests fail (not skip) when ``CI`` is set without it.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import os
 import re
 import sys
 import unittest
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -104,6 +106,27 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertEqual(consumer["retry"]["provider_idempotency_keys"], policy.IDEMPOTENT_PROVIDERS)
         for name, header in from_fixture.items():
             self.assertIn(header, fixture["providers"][name]["expected_request"]["headers"])
+        self.assertEqual(set(consumer["retry"]["non_idempotent_providers"]), set(policy.NON_IDEMPOTENT_PROVIDERS))
+        self.assertEqual(set(policy.IDEMPOTENT_PROVIDERS) | set(policy.NON_IDEMPOTENT_PROVIDERS) | {"console"},
+                         set(policy.PROVIDERS))
+
+    def test_email_is_not_provider_idempotent(self) -> None:
+        self.assertNotIn("email", policy.IDEMPOTENT_PROVIDERS)
+        self.assertNotIn("email", consumer["retry"]["provider_idempotency_keys"])
+        self.assertIn("email", consumer["retry"]["non_idempotent_providers"])
+        self.assertIsNone(fixture["providers"]["email"]["idempotency_key_header"])
+        # An uncertain DATA timeout followed by a retry reaches the SMTP server twice.
+        box = policy.Outbox()
+        _, row = box.queue({"title": "t", "message": "m", "notification_type": "x", "recipient_ref": "rcpt-4",
+                            "address": "person-0004@example.invalid"})
+        self.assertEqual(box.attempt(row["id"], "email", {"transport_error": "timeout"}), "uncertain")
+        self.assertEqual(box.attempt(row["id"], "email", {"smtp_code": 250}), "delivered")
+        sent = [s["request"] for s in box.sends]
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(sent[0]["headers"]["Message-ID"], sent[1]["headers"]["Message-ID"])  # hygiene only
+        self.assertEqual({s["idempotency_key"] for s in box.sends}, {None})
+        doc = (ROOT / "docs/gates/BOO-150-communication-delivery-gate.md").read_text(encoding="utf-8")
+        self.assertIn("SMTP retry after an uncertain DATA timeout can deliver twice", doc)
 
     def test_no_credentials_in_requests_or_fixture(self) -> None:
         for name, spec in fixture["providers"].items():
@@ -169,16 +192,37 @@ class RetryIdempotencyTests(unittest.TestCase):
                 final = box.rows[row["id"]]
                 self.assertEqual(final["delivery_attempts"], scenario["final_attempts"])
                 self.assertEqual(final["delivered_at"] is not None, scenario["delivered"])
+                if "provider_calls" in scenario:
+                    self.assertEqual(len(box.sends), scenario["provider_calls"])
+                if scenario.get("duplicate_possible"):
+                    self.assertIn(scenario["provider"], policy.NON_IDEMPOTENT_PROVIDERS)
                 self.assertEqual(final["id"] in {p["id"] for p in box.pending()},
                                  not scenario["delivered"] and final["delivery_attempts"] < policy.MAX_ATTEMPTS)
 
-    def test_provider_key_is_stable_across_retries(self) -> None:
+    def test_line_retry_sends_the_same_uuid_key(self) -> None:
         box = policy.Outbox()
-        _, row = box.queue({"title": "t", "message": "m", "notification_type": "x", "recipient_ref": "r"})
-        box.attempt(row["id"], "line", {"status": 500})
-        box.attempt(row["id"], "line", {"status": 409})
-        keys = {s["idempotency_key"] for s in box.sends}
-        self.assertEqual(keys, {policy.provider_idempotency_key(row["id"])})
+        _, row = box.queue({"title": "t", "message": "m", "notification_type": "x", "recipient_ref": "r",
+                            "address": "U00000000000000000000000000000002"})
+        _, other = box.queue({"title": "t", "message": "m", "notification_type": "x", "recipient_ref": "r"})
+        self.assertEqual(box.attempt(row["id"], "line", {"status": 500}), "uncertain")
+        self.assertEqual(box.attempt(row["id"], "line", {"status": 409}), "delivered")
+        box.attempt(other["id"], "line", {"status": 200, "body": {}})
+        sent = [s["request"]["headers"]["X-Line-Retry-Key"] for s in box.sends]
+        self.assertEqual(sent[0], sent[1])
+        self.assertNotEqual(sent[0], sent[2])
+        for key in sent:
+            self.assertEqual(str(uuid.UUID(key)), key)  # LINE rejects a non-UUID retry key with 400
+        self.assertEqual(sent[0], policy.line_retry_key(row["id"]))
+        self.assertEqual([s["idempotency_key"] for s in box.sends], sent)
+
+    def test_caller_cannot_preset_outbox_state(self) -> None:
+        box = policy.Outbox()
+        for name in policy.OUTBOX_FIELDS:
+            with self.subTest(field=name):
+                with self.assertRaises(policy.PolicyError) as error:
+                    box.queue({"title": "t", "message": "m", "notification_type": "x", name: 1})
+                self.assertEqual(error.exception.status, 422)
+        self.assertEqual(box.rows, {})
 
     def test_every_rule_has_a_status(self) -> None:
         for rule in self.rules["rules"]:
@@ -196,23 +240,55 @@ class OptOutTests(unittest.TestCase):
 
     def test_inbound_signals(self) -> None:
         sources = set()
+        recipients = self.rules["recipient_map"]
         for case in self.rules["inbound_signals"]:
             with self.subTest(case=case["case"]):
-                result = policy.opt_out_from_inbound(case["event"])
-                if case["expect"] is None:
-                    self.assertIsNone(result)
+                if "expect_error" in case:
+                    with self.assertRaises(policy.PolicyError) as error:
+                        policy.opt_out_from_inbound(case["event"], recipients)
+                    self.assertEqual((error.exception.status, error.exception.reason), (400, case["expect_error"]))
                     continue
-                sources.add(result.source)
-                self.assertEqual({"channel": result.channel, "source": result.source, "event_id": result.event_id},
-                                 case["expect"])
+                result = policy.opt_out_from_inbound(case["event"], recipients)
+                sources.update(r.source for r in result)
+                self.assertEqual([{"recipient_ref": r.recipient_ref, "channel": r.channel, "source": r.source,
+                                   "event_id": r.event_id} for r in result], case["expect"])
         self.assertLessEqual(sources, set(consumer["opt_out"]["signals"]))
 
     def test_replayed_signal_changes_nothing(self) -> None:
         registry = policy.OptOutRegistry()
         event = self.rules["inbound_signals"][0]["event"]
-        self.assertEqual(registry.record(policy.opt_out_from_inbound(event)), "created")
-        self.assertEqual(registry.record(policy.opt_out_from_inbound(event)), "existing")
+        [first] = policy.opt_out_from_inbound(event, self.rules["recipient_map"])
+        self.assertEqual(registry.record(first), "created")
+        [again] = policy.opt_out_from_inbound(event, self.rules["recipient_map"])
+        self.assertEqual(registry.record(again), "existing")
         self.assertEqual(len(registry.entries), 1)
+
+    def test_batch_unfollows_all_block(self) -> None:
+        registry = policy.OptOutRegistry()
+        batch = next(c for c in self.rules["inbound_signals"] if c["case"] == "line_batch_two_unfollows")
+        for opt_out in policy.opt_out_from_inbound(batch["event"], self.rules["recipient_map"]):
+            self.assertEqual(registry.record(opt_out), "created")
+        self.assertTrue(registry.blocks("rcpt-0002", "line"))
+        self.assertTrue(registry.blocks("rcpt-0005", "line"))
+
+    def test_reviewer_repro_missing_event_ids_are_not_collapsed(self) -> None:
+        # Two id-less unfollows from different users used to share the key "line:None": the
+        # second was treated as a replay and r2 stayed reachable. They are now rejected.
+        def unfollow(user):
+            return {"provider": "line", "body": {"events": [{"type": "unfollow",
+                                                              "source": {"type": "user", "userId": user}}]}}
+        recipients = {"U1": "r1", "U2": "r2"}
+        for user in ("U1", "U2"):
+            with self.assertRaises(policy.PolicyError) as error:
+                policy.opt_out_from_inbound(unfollow(user), recipients)
+            self.assertEqual(error.exception.reason, "missing_webhook_event_id")
+        registry = policy.OptOutRegistry()
+        for user, event_id in (("U1", "E1"), ("U2", "E2")):
+            body = unfollow(user)
+            body["body"]["events"][0]["webhookEventId"] = event_id
+            for opt_out in policy.opt_out_from_inbound(body, recipients):
+                self.assertEqual(registry.record(opt_out), "created")
+        self.assertTrue(registry.blocks("r1", "line") and registry.blocks("r2", "line"))
 
     def test_enforcement_scenarios(self) -> None:
         responses = {"line": {"status": 200, "body": {}}, "email": {"smtp_code": 250}, "console": {},
@@ -269,15 +345,18 @@ class ConsumerContractTests(unittest.TestCase):
 
 
 SOURCE = os.environ.get("PLATFORM_NOTIFICATIONS_API")
+IN_CI = os.environ.get("CI", "").lower() in ("1", "true", "yes")
 
 
-@unittest.skipUnless(SOURCE and Path(SOURCE, "src/solo_notifications/app.py").is_file(),
-                     "set PLATFORM_NOTIFICATIONS_API to a platform-notifications-api checkout (local only)")
+@unittest.skipUnless(SOURCE or IN_CI,
+                     "set PLATFORM_NOTIFICATIONS_API to a platform-notifications-api checkout (CI always does)")
 class SourceDriftTests(unittest.TestCase):
     """Compares current-status rules with the server that implements them today."""
 
     @classmethod
     def setUpClass(cls) -> None:
+        if not (SOURCE and Path(SOURCE, "src/solo_notifications/app.py").is_file()):
+            raise AssertionError("CI must set PLATFORM_NOTIFICATIONS_API to a platform-notifications-api checkout")
         cls.app = Path(SOURCE, "src/solo_notifications/app.py").read_text(encoding="utf-8")
         cls.dispatch = Path(SOURCE, "src/solo_notifications/dispatch.py").read_text(encoding="utf-8")
 
