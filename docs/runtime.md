@@ -162,3 +162,10 @@ regression tests and correctly makes security not ready.
 Full PostgreSQL-backed suite after correction: `62 passed`, no database
 skips, one unchanged upstream Starlette/httpx warning. Original offline check
 also passed. Migration 0001 SQL/checksum is unchanged.
+
+## Pooled connection reuse
+
+Store queries that return mappings use cursor-scoped `dict_row`; they do not
+change the pooled connection row factory. Single-connection PostgreSQL
+regressions cover successful traffic, conflicts, rollback and foreign-workspace
+reads followed by repeated service and shared-core readiness checks.

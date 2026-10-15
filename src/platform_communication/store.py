@@ -21,8 +21,7 @@ class OutboxStore:
         if template=='html' and channel!='email':raise ValueError('Invalid template')
         if type(max_attempts) is not int or not 1<=max_attempts<=10:raise ValueError('Invalid attempts')
         fingerprint=hashlib.sha256(json.dumps([channel,recipient,body,template,max_attempts],separators=(',',':')).encode()).hexdigest()
-        with self.db.transaction(workspace) as c:
-            c.row_factory=dict_row
+        with self.db.transaction(workspace) as conn, conn.cursor(row_factory=dict_row) as c:
             c.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",('message-capacity:'+str(workspace),))
             c.execute('INSERT INTO message_outbox(workspace_id,id,event_key,fingerprint,channel,recipient,body,template,max_attempts) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(workspace_id,event_key) DO NOTHING',(workspace,uuid4(),key,fingerprint,channel,recipient,body,template,max_attempts))
             row=c.execute(f'SELECT {PUBLIC},fingerprint FROM message_outbox WHERE event_key=%s',(key,)).fetchone()
@@ -30,18 +29,15 @@ class OutboxStore:
             if c.execute("SELECT count(*) FROM message_outbox WHERE status IN ('queued','leased','sending','uncertain')").fetchone()['count']>self.max_pending:raise QueueFull()
             return row
     def get(self,workspace,id):
-        with self.db.transaction(workspace) as c:
-            c.row_factory=dict_row
+        with self.db.transaction(workspace) as conn, conn.cursor(row_factory=dict_row) as c:
             return c.execute(f'SELECT {PUBLIC} FROM message_outbox WHERE id=%s',(id,)).fetchone()
     def list(self,workspace,limit=100,after=None):
         if not 1<=limit<=100:raise ValueError('Invalid limit')
-        with self.db.transaction(workspace) as c:
-            c.row_factory=dict_row
+        with self.db.transaction(workspace) as conn, conn.cursor(row_factory=dict_row) as c:
             return c.execute(f'SELECT {PUBLIC} FROM message_outbox WHERE (%s::uuid IS NULL OR id>%s::uuid) ORDER BY id LIMIT %s',(after,after,limit)).fetchall()
     def claim(self,workspace,lease_seconds=30):
         if type(lease_seconds) is not int or not 10<=lease_seconds<=300:raise ValueError('Invalid lease')
-        with self.db.transaction(workspace) as c:
-            c.row_factory=dict_row
+        with self.db.transaction(workspace) as conn, conn.cursor(row_factory=dict_row) as c:
             c.execute("UPDATE message_outbox SET status='uncertain',lease_token=NULL WHERE status='sending' AND lease_until<=clock_timestamp()")
             c.execute("UPDATE message_outbox SET status='dead',lease_token=NULL WHERE status='leased' AND lease_until<=clock_timestamp() AND attempts>=max_attempts")
             return c.execute("""WITH candidate AS (SELECT id FROM message_outbox WHERE attempts<max_attempts AND ((status='queued' AND run_at<=clock_timestamp()) OR (status='leased' AND lease_until<=clock_timestamp())) ORDER BY run_at,id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE message_outbox m SET status='leased',attempts=attempts+1,lease_token=%s,lease_until=clock_timestamp()+%s*interval '1 second' FROM candidate WHERE m.id=candidate.id RETURNING m.*""",(uuid4(),lease_seconds)).fetchone()
