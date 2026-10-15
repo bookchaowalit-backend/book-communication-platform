@@ -42,6 +42,17 @@ class ContractCheckTests(unittest.TestCase):
     def test_repository_contract_is_valid(self) -> None:
         self.assertEqual(check.validate(ROOT), [])
 
+
+    def test_canonical_adjacent_implementation_is_accepted(self) -> None:
+        self.contract["current_implementation"]["repository"] = "platform-notifications-api"
+        self.write_contract()
+        self.assertEqual(check.validate(self.root), [])
+
+    def test_unregistered_adjacent_implementation_is_rejected(self) -> None:
+        self.contract["current_implementation"]["repository"] = "unregistered-provider"
+        self.write_contract()
+        self.assert_error("current_implementation.repository must be one of")
+
     def test_contract_declares_precise_boundary_metadata(self) -> None:
         implementation = self.contract["current_implementation"]
         self.assertIn("source_paths", implementation)

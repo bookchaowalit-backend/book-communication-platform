@@ -19,7 +19,7 @@
     "observability"
   ],
   "current_implementation": {
-    "repository": "notifications",
+    "repository": "platform-notifications-api",
     "source_path": "bookchaowalit/platform-notifications-api",
     "source_paths": [
       "bookchaowalit/platform-notifications-api"

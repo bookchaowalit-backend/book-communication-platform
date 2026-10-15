@@ -20,7 +20,7 @@ from typing import Any
 # Everything below this block is shared verbatim across Book Platform
 # repositories; keep local differences inside this block.
 ALLOWED_STATUS = frozenset({"scaffolded"})
-IMPLEMENTATION_REPOSITORIES = frozenset({"solo-empire"})
+IMPLEMENTATION_REPOSITORIES = frozenset({"solo-empire", "platform-notifications-api"})
 EXTRA_REQUIRED_FILES: tuple[str, ...] = ()
 EXTRA_README_HEADINGS: tuple[str, ...] = ()
 # ---------------------------------------------------------------------------
