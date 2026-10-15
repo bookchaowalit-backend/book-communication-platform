@@ -47,6 +47,13 @@ consumer.
 - retry idempotency
 - opt-out enforcement
 
+Gate evidence for all three (BOO-150, owner decision proposed, not accepted):
+[`docs/gates/BOO-150-communication-delivery-gate.md`](gates/BOO-150-communication-delivery-gate.md),
+with synthetic provider fixtures in `fixtures/gates/communication-delivery.json`, a
+reference policy module (`reference/communication_policy.py`, not wired to any
+runtime) and a proposed caller contract in
+`contracts/consumer/communication-delivery.consumer.v1.json`.
+
 ## Out of scope
 
 No production provider integration, credential, database writer or customer
