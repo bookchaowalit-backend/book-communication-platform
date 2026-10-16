@@ -5,8 +5,8 @@ encodes the rules a delivery runtime must follow so they can be tested against
 fixtures in ``fixtures/gates/communication-delivery.json``. Nothing in this
 repository (on ``main``) imports it at run time, it sends no messages and holds
 no credentials. It mirrors the current implementation where one exists
-(``bookchaowalit/platform-notifications-api``) and marks proposed rules
-(opt-out) as such; see ``docs/gates/BOO-150-communication-delivery-gate.md``.
+(``bookchaowalit/platform-notifications-api``) and marks rules accepted by the
+owner on 2026-10-16 but not implemented by any runtime (opt-out) as such; see ``docs/gates/BOO-150-communication-delivery-gate.md``.
 
 Rules encoded here:
 
@@ -23,7 +23,7 @@ Rules encoded here:
   is NOT provider idempotency: an SMTP retry after an uncertain DATA timeout
   can deliver twice.
 * opt-out - a delivery to an opted-out recipient/channel is suppressed before
-  any provider call (PROPOSED: the current source has no opt-out store).
+  any provider call (accepted 2026-10-16, not implemented: the current source has no opt-out store).
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 # BOO-150 — communication delivery gate evidence
 
-Status: evidence recorded; owner decision **proposed, not accepted**. Nothing
-here changes a status, activates a runtime, or moves traffic.
+Status: evidence recorded; owner decision **accepted 2026-10-16** (policy + consumer contract).
+Nothing here changes a status, activates a runtime, or moves traffic.
 
 ## Next gate (verbatim)
 
@@ -25,7 +25,7 @@ idempotency key semantics or duplicate response requires a contract update" rule
 |---|---|---|
 | Provider adapter fixtures, retry and opt-out cases (synthetic) | `fixtures/gates/communication-delivery.json` | no |
 | Reference policy module (pure Python, stdlib only) | `reference/communication_policy.py` | **no** — nothing imports it at run time; it sends nothing and holds no credentials |
-| Consumer contract for callers | `contracts/consumer/communication-delivery.consumer.v1.json` | no (`status: proposed`, `owner_acceptance: pending`) |
+| Consumer contract for callers | `contracts/consumer/communication-delivery.consumer.v1.json` | no (`status: accepted`, `owner_acceptance.date: 2026-10-16`) |
 | Tests (run by `bash scripts/check.sh`) | `tests/test_delivery_gate.py` | — |
 
 `main` has no adapter, store or worker code, so per the gate brief this adds a reference policy
@@ -78,7 +78,8 @@ appears in the fixture.
 
 1. **Opt-out is not implemented anywhere** (current server, client, PR #1). The fixture and the
    reference module define it (suppress before any provider call, no attempt counted, `*` scope,
-   signal dedupe by external event ID, console exempt) but it is `proposed` only.
+   signal dedupe by external event ID, console exempt). The owner accepted it on 2026-10-16, but it
+   is `accepted-not-implemented`: no runtime enforces it yet.
 2. **No recipient model.** Today the only external recipient is the owner's Telegram chat from
    environment; there is no `recipient_ref`. Opt-out needs one; the consumer contract proposes an
    opaque `recipient_ref` (addresses stay inside the boundary).
@@ -105,9 +106,14 @@ appears in the fixture.
    or `userId` is a per-event 400 error (never collapsed into a shared key); the valid opt-outs of
    the same batch are still returned for recording.
 
-## Owner decision — PROPOSED, NOT ACCEPTED
+## Owner decision — ACCEPTED (owner decision 2026-10-16)
 
-The owner (bookchaowalit) is asked to accept or reject, as a single decision:
+Owner's answer, verbatim: "ทั้งหมด ยกเว้น 140/256 (Recommended)" (accept the recommended option on
+every pending gate except BOO-140 and BOO-256), relayed via the parent session (local_a6dedf75).
+Accepted option for this issue, exactly: **BOO-150: accept policy + consumer contract.**
+
+That covers items 1-3 below as proposed (consumer contract, opt-out policy, retry policy). Rules that
+were `proposed` are now `accepted-not-implemented` in the fixture and the consumer contract.
 
 1. Adopt `contracts/consumer/communication-delivery.consumer.v1.json` as the caller contract for
    the communication boundary, with `current` rules frozen as compatibility surface and
@@ -120,10 +126,19 @@ The owner (bookchaowalit) is asked to accept or reject, as a single decision:
 3. Retry policy: `max_attempts = 3`, at-least-once, a provider key only where the provider
    deduplicates on it (LINE: `X-Line-Retry-Key` = uuid5 of `message/<id>`), telegram/slack/email
    documented as possibly duplicating after an uncertain outcome, non-429 4xx is terminal.
-4. Update the registry `source_paths` for `communications` to the live server.
+4. Update the registry `source_paths` for `communications` to the live server. **Not decided** —
+   the accepted option names the policy and the consumer contract only; this stays open.
 
-Until accepted: no status change, no runtime move, no consumer change, no cutover. This document
-does not claim any production state.
+### Still open after the decision
+
+- Registry `source_paths` update (item 4) and the stale `contract.json` `interfaces[].source` paths.
+- Choosing the runtime (current platform-notifications-api or PR #1) that implements the
+  `accepted-not-implemented` rules: opt-out store and `POST /v1/opt-outs`, `recipient_ref`,
+  LINE `X-Line-Retry-Key`, dead-stops-retry, and routing LINE `unfollow` from `/api/webhook/line`.
+- Parity and rollback evidence, then a separate cutover decision. Accepting the contract is not a
+  cutover: no status change, runtime move or consumer change follows from it. This document does
+  not claim any production state.
+- A scheduled server-parity run against upstream `main` (today's tripwire reads the pinned SHA).
 
 ## Verification
 
