@@ -1,11 +1,23 @@
 {
   "contract": "communication-delivery.consumer.v1",
   "issue": "BOO-150",
-  "status": "proposed",
-  "owner_acceptance": "pending",
+  "status": "accepted",
+  "owner_acceptance": {
+    "status": "accepted",
+    "date": "2026-10-16",
+    "accepted_option": "BOO-150: accept policy + consumer contract.",
+    "owner_answer_verbatim": "ทั้งหมด ยกเว้น 140/256 (Recommended)",
+    "relayed_via": "parent session local_a6dedf75",
+    "scope": "consumer contract communication-delivery.consumer.v1, opt-out policy, retry/idempotency policy (proposed decision items 1-3)",
+    "not_decided": [
+      "registry source_paths update for communications (proposed item 4)",
+      "which runtime implements the accepted-not-implemented rules (current server or PR #1)",
+      "cutover"
+    ]
+  },
   "provider_boundary": "communication",
   "current_server": "bookchaowalit/platform-notifications-api",
-  "note": "What a caller may rely on when it asks the communication boundary to deliver a message. Rules marked current are served by platform-notifications-api today; rules marked proposed are not implemented anywhere yet and need owner acceptance. This repository serves none of these routes.",
+  "note": "What a caller may rely on when it asks the communication boundary to deliver a message. Accepted by the owner on 2026-10-16. Rules marked current are served by platform-notifications-api today; rules marked accepted-not-implemented are accepted policy that no runtime implements yet and must be implemented before any cutover. This repository serves none of these routes.",
   "upstream_contract": "systems/architecture/solo-empire-api-contract-v1.md#signed-and-authenticated-webhook-routes",
   "auth": {
     "scheme": "Authorization: Bearer <automation token>",
@@ -118,7 +130,7 @@
     },
     {
       "id": "record-opt-out",
-      "status": "proposed",
+      "status": "accepted-not-implemented",
       "method": "POST",
       "path": "/v1/opt-outs",
       "request_required": [
@@ -151,7 +163,7 @@
     "email_message_id": "stable '<message/<id>@...>' for hygiene only; SMTP does not deduplicate on it, so an uncertain retry can duplicate"
   },
   "opt_out": {
-    "status": "proposed",
+    "status": "accepted-not-implemented",
     "enforced_by": "the communication boundary before any provider call; callers never filter themselves",
     "suppressed_result": "entry stays undelivered with delivery_error=opted_out and no attempt counted",
     "signals": [
@@ -202,5 +214,9 @@
       422,
       503
     ]
+  },
+  "status_values": {
+    "current": "served by platform-notifications-api today",
+    "accepted-not-implemented": "accepted by the owner 2026-10-16, not implemented by any runtime"
   }
 }

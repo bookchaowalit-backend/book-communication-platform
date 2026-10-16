@@ -226,17 +226,17 @@ class RetryIdempotencyTests(unittest.TestCase):
 
     def test_every_rule_has_a_status(self) -> None:
         for rule in self.rules["rules"]:
-            self.assertIn(rule["status"], ("current", "proposed"), rule["id"])
+            self.assertIn(rule["status"], ("current", "accepted-not-implemented"), rule["id"])
 
 
 class OptOutTests(unittest.TestCase):
     rules = fixture["opt_out"]
 
-    def test_opt_out_is_marked_proposed_everywhere(self) -> None:
-        self.assertEqual(self.rules["status"], "proposed")
-        self.assertEqual(consumer["opt_out"]["status"], "proposed")
+    def test_opt_out_is_accepted_but_not_implemented_everywhere(self) -> None:
+        self.assertEqual(self.rules["status"], "accepted-not-implemented")
+        self.assertEqual(consumer["opt_out"]["status"], "accepted-not-implemented")
         op = next(o for o in consumer["operations"] if o["id"] == "record-opt-out")
-        self.assertEqual(op["status"], "proposed")
+        self.assertEqual(op["status"], "accepted-not-implemented")
 
     def test_inbound_signals(self) -> None:
         sources = set()
@@ -360,14 +360,29 @@ class OptOutTests(unittest.TestCase):
 class ConsumerContractTests(unittest.TestCase):
     def test_shape(self) -> None:
         self.assertEqual(consumer["contract"], "communication-delivery.consumer.v1")
-        self.assertEqual(consumer["owner_acceptance"], "pending")
+        self.assertEqual(consumer["status"], "accepted")
         self.assertEqual(consumer["upstream_contract"], fixture["contract"])
         self.assertEqual(fixture["consumer_contract"], str(CONSUMER.relative_to(ROOT)))
         ids = [o["id"] for o in consumer["operations"]]
         self.assertEqual(len(ids), len(set(ids)))
         for op in consumer["operations"]:
-            self.assertIn(op["status"], ("current", "proposed"), op["id"])
+            self.assertIn(op["status"], ("current", "accepted-not-implemented"), op["id"])
             self.assertRegex(op["path"], r"^/v1/")
+
+    def test_owner_decision_recorded(self) -> None:
+        decision = consumer["owner_acceptance"]
+        self.assertEqual(decision, fixture["owner_decision"])
+        self.assertEqual((decision["status"], decision["date"]), ("accepted", "2026-10-16"))
+        self.assertEqual(decision["accepted_option"], "BOO-150: accept policy + consumer contract.")
+        self.assertEqual(decision["owner_answer_verbatim"], "ทั้งหมด ยกเว้น 140/256 (Recommended)")
+        self.assertTrue(decision["relayed_via"])
+        self.assertTrue(any("registry" in item for item in decision["not_decided"]))
+        self.assertTrue(any("cutover" in item for item in decision["not_decided"]))
+        for document in (json.dumps(consumer), json.dumps(fixture)):
+            self.assertNotIn('"proposed"', document)  # every former proposal now carries the decision
+        doc = (ROOT / "docs/gates/BOO-150-communication-delivery-gate.md").read_text(encoding="utf-8")
+        self.assertNotIn("PROPOSED, NOT ACCEPTED", doc)
+        self.assertIn("**Not decided**", doc)
 
     def test_inbound_line_route_matches_upstream_contract_row(self) -> None:
         route = consumer["inbound_webhooks"][0]
@@ -375,7 +390,10 @@ class ConsumerContractTests(unittest.TestCase):
 
     def test_gate_doc_links_artifacts(self) -> None:
         doc = (ROOT / "docs/gates/BOO-150-communication-delivery-gate.md").read_text(encoding="utf-8")
-        for needle in (fixture["next_gate"], fixture["contract"], "Owner decision — PROPOSED, NOT ACCEPTED",
+        for needle in (fixture["next_gate"], fixture["contract"],
+                       "Owner decision — ACCEPTED (owner decision 2026-10-16)",
+                       "ทั้งหมด ยกเว้น 140/256 (Recommended)", "relayed via the parent session",
+                       "BOO-150: accept policy + consumer contract.",
                        str(FIXTURE.relative_to(ROOT)), str(CONSUMER.relative_to(ROOT)), fixture["reference_module"]):
             self.assertIn(needle, doc)
         surface = (ROOT / "docs/CONTRACT-SURFACE.md").read_text(encoding="utf-8")
