@@ -6,8 +6,9 @@
 
 This repository owns the `communication` capability: email, SMS, push, templates, delivery status.
 The current source implementation is recorded as `infra/services/notifier` in the
-parent registry. This checkout is a local scaffold; it contains no production
-provider integration, database writer, credential, or customer payload.
+parent registry. This checkout includes an optional, locally implemented runtime pilot. Its legacy
+contract remains scaffolded pending activation evidence; no production activation
+is claimed.
 
 ## Boundary
 
@@ -63,3 +64,10 @@ Before activating a remote or changing a consumer, add sanitized fixtures for
 success, duplicate delivery, timeout and provider failure; prove tenant/privacy
 isolation; compare the old and new contract; and rehearse rollback on a
 disposable state store. Record the evidence in the parent platform registry.
+
+## Runtime pilot — implemented locally, staged only
+
+Correlation: `SHARED-INFRA-2026-10-15`. The new Python 3.12+ / PostgreSQL 16+
+runtime owns workspace data through forced RLS and verified UUID workspace JWTs.
+See [API and operating guide](docs/runtime.md). Original contracts, schema pins
+and offline checks are retained. This code has not been pushed or deployed.
